@@ -6,10 +6,10 @@
 	.section .text.head, "ax"
 	.globl _head
 _head:
-	b	_start			/* code0 */
+	b	entry0			/* code0 */
 	.long	0			/* code1 */
 	.quad	0x80000			/* text_offset */
-	.quad	_end			/* image_size (linked at 0) */
+	.quad	_end			/* image_size (build.sh rewrites it) */
 	.quad	0x2			/* flags: LE, 4K pages */
 	.quad	0			/* res2 */
 	.quad	0			/* res3 */
@@ -17,22 +17,73 @@ _head:
 	.ascii	"ARM\x64"		/* magic */
 	.long	0			/* res5 (PE offset) */
 
+/*
+ * Boot diagnostics, laid out like the bare-metal tests S-Boot ran: code
+ * right behind the header, constants built in registers (no literal pool,
+ * no memory loads), before anything else. Rows of S-Boot's framebuffer
+ * (0xf1000000, 1440 px, 5760 bytes per row):
+ *   rows   0- 63  green   this code runs
+ *   rows  64-127  blue    a word at the far end of the shim image reads back
+ *                         right (red: S-Boot did not load/clean all of it)
+ *   rows 128-191  blue    a payload follows the image (yellow: none)
+ * then ~3 s pause so the bands can be seen, then the C loader.
+ */
+entry0:
+	msr	daifset, #0xf
+	mov	x19, x0			/* DTB pointer from S-Boot */
+	movz	x1, #0xf100, lsl #16	/* framebuffer */
+	movz	w3, #0xff00, lsl #16
+	movk	w3, #0xff00		/* green */
+	bl	band
+	adr	x4, far_probe
+	ldr	w5, [x4]
+	movz	w6, #0x5a5a, lsl #16
+	movk	w6, #0xa5a5
+	movz	w3, #0xffff, lsl #16	/* red */
+	cmp	w5, w6
+	b.ne	1f
+	movz	w3, #0xff00, lsl #16
+	movk	w3, #0x00ff		/* blue */
+1:	bl	band
+	adr	x4, _end
+	ldr	w5, [x4]
+	movz	w6, #0x5853, lsl #16
+	movk	w6, #0x3259		/* "Y2SX" little endian */
+	movz	w3, #0xffff, lsl #16
+	movk	w3, #0xff00		/* yellow */
+	cmp	w5, w6
+	b.ne	2f
+	movz	w3, #0xff00, lsl #16
+	movk	w3, #0x00ff		/* blue */
+2:	bl	band
+	/* ~3 s: CNTFRQ is 26 MHz on the S20 (78M ticks) */
+	mrs	x4, cntfrq_el0
+	cbnz	x4, 3f
+	movz	x4, #0x18c, lsl #16
+	movk	x4, #0xba80
+3:	add	x4, x4, x4, lsl #1
+	isb
+	mrs	x5, cntpct_el0
+	add	x4, x4, x5
+4:	isb
+	mrs	x5, cntpct_el0
+	cmp	x5, x4
+	b.lo	4b
+	b	_start
+
+/* Fill 64 rows at x1 with w3; x1 advances past them. */
+band:
+	movz	x2, #0x1, lsl #16
+	movk	x2, #0x6800		/* 1440 * 64 pixels */
+5:	str	w3, [x1], #4
+	subs	x2, x2, #1
+	b.ne	5b
+	dsb	sy
+	ret
+
 	.text
 	.globl _start
 _start:
-	msr	daifset, #0xf
-	mov	x19, x0			/* DTB pointer from S-Boot */
-	/*
-	 * First sign of life, before stack or C: a green band over the top
-	 * 64 rows of S-Boot's framebuffer (0xf1000000, 1440 px wide).
-	 */
-	ldr	x1, =0xf1000000
-	ldr	x2, =(1440 * 64)
-	ldr	w3, =0xff00ff00
-0:	str	w3, [x1], #4
-	subs	x2, x2, #1
-	b.ne	0b
-	dsb	sy
 	msr	spsel, #1
 	adr	x1, _stack_top
 	mov	sp, x1
@@ -138,3 +189,9 @@ exc_common:
 	add	sp, sp, #(30 * 8)
 	ldp	x29, x30, [sp], #16
 	eret
+
+/* Last initialized word of the image (.data is placed last): see entry0. */
+	.data
+	.balign	4
+far_probe:
+	.word	0x5a5aa5a5
