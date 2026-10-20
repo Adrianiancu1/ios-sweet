@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/y2s_ufs.c b/bsd/dev/y2s_ufs.c
-index a39c01e..b3059aa 100644
+index a39c01e..a48cd3b 100644
 --- a/bsd/dev/y2s_ufs.c
 +++ b/bsd/dev/y2s_ufs.c
 @@ -14,6 +14,15 @@
@@ -18,7 +18,15 @@ index a39c01e..b3059aa 100644
   * Writes are refused unless boot-arg ufsrw=1 is set. Every write is checked
   * against the partition bounds again right before it is issued, so nothing
   * outside the named partition can be written.
-@@ -84,14 +93,30 @@ struct utrd {
+@@ -64,6 +73,7 @@ extern void y2s_usb_probe(void);
+ #define REG_UTRLDBR     0x58
+ #define REG_UTRLCLR     0x5c
+ #define REG_UTRLRSR     0x60
++#define REG_AHIT        0x18                    /* auto-hibernate idle timer (UFSHCI 3.0) */
+ 
+ #define HCS_DP          (1u << 0)
+ #define HCS_UTRLRDY     (1u << 1)
+@@ -84,14 +94,30 @@ struct utrd {
  	uint32_t prdt;          /* [31:16] PRDT offset (DWORDs), [15:0] entries */
  };
  
@@ -52,7 +60,7 @@ index a39c01e..b3059aa 100644
  /* Layout of the contiguous DMA allocation. */
  #define DMA_UTRL        0x0000                  /* 1 KiB aligned */
  #define DMA_UCD         0x1000                  /* 128 byte aligned */
-@@ -100,6 +125,9 @@ struct ucd {
+@@ -100,6 +126,9 @@ struct ucd {
  
  static struct {
  	vm_offset_t regs;
@@ -62,12 +70,15 @@ index a39c01e..b3059aa 100644
  	vm_offset_t dma;                        /* kernel VA of the DMA allocation */
  	uint64_t dma_pa;
  	uint8_t lun;
-@@ -112,8 +140,12 @@ static struct {
+@@ -112,8 +141,15 @@ static struct {
  	int bmajor, cmajor;
  	dev_t bdev;
  	bool ready;
 +	uint8_t target_lun;                     /* LUN of the next command (su.lun or a W-LUN) */
 +	uint8_t sense_key, asc, ascq;           /* of the last CHECK CONDITION */
++	uint32_t last_is;                       /* IS at the last completion */
++	bool last_rang;                         /* doorbell bit seen set after ringing */
++	bool last_unprocessed;                  /* host never touched the last command */
  } su;
  
 +#define UFS_WLUN_DEVICE         0xd0            /* UFS Device well-known LU */
@@ -75,7 +86,19 @@ index a39c01e..b3059aa 100644
  static LCK_GRP_DECLARE(y2s_ufs_grp, "y2s_ufs");
  static LCK_MTX_DECLARE(y2s_ufs_lock, &y2s_ufs_grp);
  
-@@ -158,7 +190,7 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
+@@ -145,8 +181,10 @@ dma_clean(uint32_t off, uint32_t len)
+  * One SCSI command in slot 0, data (if any) to/from the bounce buffer
+  * (to the device when write is set). Returns 0 or an errno.
+  */
++static int ufs_take_over_host(void);
++
+ static int
+-ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
++ufs_scsi_once(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
+ {
+ 	struct utrd *utrd = (struct utrd *)(su.dma + DMA_UTRL);
+ 	struct ucd *ucd = (struct ucd *)(su.dma + DMA_UCD);
+@@ -158,7 +196,7 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
  
  	ucd->cmd[0] = 0x01;                     /* COMMAND UPIU */
  	ucd->cmd[1] = len ? (write ? 0x20 : 0x40) : 0x00;      /* W: data out, R: data in */
@@ -84,7 +107,7 @@ index a39c01e..b3059aa 100644
  	ucd->cmd[3] = ++su.tag;
  	ucd->cmd[12] = (uint8_t)(len >> 24);
  	ucd->cmd[13] = (uint8_t)(len >> 16);
-@@ -171,16 +203,22 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
+@@ -171,16 +209,22 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
  	utrd->dw2 = 0x0f;                       /* OCS invalid until updated */
  	utrd->ucdba = (uint32_t)ucd_pa;
  	utrd->ucdbau = (uint32_t)(ucd_pa >> 32);
@@ -111,7 +134,7 @@ index a39c01e..b3059aa 100644
  	}
  
  	if (su.cache) {
-@@ -189,7 +227,7 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
+@@ -189,7 +233,7 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
  		dma_sync(DMA_UCD + offsetof(struct ucd, resp), sizeof(ucd->resp));
  		if (len) {
  			dma_clean(DMA_UCD + offsetof(struct ucd, prdt),
@@ -120,7 +143,15 @@ index a39c01e..b3059aa 100644
  		}
  	} else {
  		dma_sync(DMA_UTRL, sizeof(*utrd));
-@@ -219,7 +257,8 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
+@@ -205,6 +249,7 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
+ 	__builtin_arm_dsb(0xf);
+ 
+ 	ufs_wr(REG_UTRLDBR, 1);
++	su.last_rang = (ufs_rd(REG_UTRLDBR) & 1) != 0;
+ 	uint64_t deadline;
+ 	nanoseconds_to_absolutetime(CMD_TIMEOUT_NS, &deadline);
+ 	deadline += mach_absolute_time();
+@@ -219,7 +264,8 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
  	while (ufs_rd(REG_UTRLDBR) & 1) {
  		uint64_t now = mach_absolute_time();
  		if (now > deadline) {
@@ -130,11 +161,22 @@ index a39c01e..b3059aa 100644
  			printf("Y2S UFS: command 0x%02x timed out\n", cdb[0]);
  			return ETIMEDOUT;
  		}
-@@ -248,6 +287,19 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
+@@ -235,7 +281,8 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
+ 		}
+ 	}
+ 	__builtin_arm_dsb(0xf);
+-	ufs_wr(REG_IS, ufs_rd(REG_IS));         /* acknowledge completion status */
++	su.last_is = ufs_rd(REG_IS);
++	ufs_wr(REG_IS, su.last_is);             /* acknowledge completion status */
+ 
+ 	dma_sync(DMA_UTRL, sizeof(*utrd));
+ 	if (su.cache) {
+@@ -248,6 +295,20 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
  	}
  
  	uint32_t ocs = utrd->dw2 & 0xff;
 +	su.sense_key = su.asc = su.ascq = 0;
++	su.last_unprocessed = (ocs == 0x0f && ucd->resp[0] == 0);
 +	if (ucd->resp[0] == 0x21 && ucd->resp[7] == 0x02) {
 +		/* CHECK CONDITION: fixed-format sense data after the 2-byte length at 32. */
 +		uint16_t slen = (uint16_t)(ucd->resp[32] << 8 | ucd->resp[33]);
@@ -150,7 +192,36 @@ index a39c01e..b3059aa 100644
  	if (ocs || ucd->resp[0] != 0x21 || ucd->resp[6] || ucd->resp[7]) {
  		printf("Y2S UFS: command 0x%02x failed: ocs 0x%x upiu 0x%x response 0x%x status 0x%x\n",
  		    cdb[0], ocs, ucd->resp[0], ucd->resp[6], ucd->resp[7]);
-@@ -353,6 +405,90 @@ ufs_find_partition(const char *want)
+@@ -256,6 +317,28 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
+ 	return 0;
+ }
+ 
++/*
++ * ufs_scsi_once, and if the host never processed the command (descriptor and
++ * response untouched), report the host state and restart the request list
++ * once, then retry.
++ */
++static int
++ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
++{
++	int error = ufs_scsi_once(cdb, cdb_len, len, write);
++	if (!error || !su.last_unprocessed) {
++		return error;
++	}
++	printf("Y2S UFS: unprocessed: rang %d IS 0x%x HCS 0x%x HCE 0x%x RSR 0x%x DBR 0x%x AHIT 0x%x LBA 0x%x\n",
++	    su.last_rang, su.last_is, ufs_rd(REG_HCS), ufs_rd(REG_HCE), ufs_rd(REG_UTRLRSR),
++	    ufs_rd(REG_UTRLDBR), ufs_rd(REG_AHIT), ufs_rd(REG_UTRLBA));
++	if (ufs_take_over_host() == 0) {
++		error = ufs_scsi_once(cdb, cdb_len, len, write);
++		printf("Y2S UFS: request list restarted, retry: %d\n", error);
++	}
++	return error;
++}
++
+ /* READ(10) of count device blocks at lba into the bounce buffer. */
+ static int
+ ufs_read_blocks(uint64_t lba, uint32_t count)
+@@ -353,6 +436,96 @@ ufs_find_partition(const char *want)
  	return ENOENT;
  }
  
@@ -177,6 +248,12 @@ index a39c01e..b3059aa 100644
 +{
 +	uint64_t fmp = ufs_smc(SMC_CMD_FMP_SECURITY, 0, 0 /* fmp-id */, FMP_CFG_DESCTYPE_3);
 +	uint64_t smu = ufs_smc(SMC_CMD_SMU, SMU_INIT, 0 /* smu-id */, 0);
++	/* Keep the link out of auto-hibernate while idle (we poll, no H8 handling). */
++	uint32_t ahit = ufs_rd(REG_AHIT);
++	if (ahit) {
++		ufs_wr(REG_AHIT, 0);
++	}
++	printf("Y2S UFS: AHIT was 0x%x, now 0x%x; HCS 0x%x\n", ahit, ufs_rd(REG_AHIT), ufs_rd(REG_HCS));
 +	uint32_t tx = *(volatile uint32_t *)(su.vs_regs + VS_TXPRDT_ENTRY_SIZE);
 +	uint32_t rx = *(volatile uint32_t *)(su.vs_regs + VS_RXPRDT_ENTRY_SIZE);
 +	*(volatile uint32_t *)(su.vs_regs + VS_TXPRDT_ENTRY_SIZE) = VS_PRDT_PREFETCH_EN | VS_PRDT_SET_SIZE(12);
@@ -241,7 +318,7 @@ index a39c01e..b3059aa 100644
  static int
  ufs_take_over_host(void)
  {
-@@ -598,6 +734,20 @@ y2s_ufs_init(void)
+@@ -598,6 +771,20 @@ y2s_ufs_init(void)
  		printf("Y2S UFS: no /y2s-ufs node in the device tree\n");
  		return ENXIO;
  	}
@@ -262,7 +339,7 @@ index a39c01e..b3059aa 100644
  	PE_parse_boot_argn("ufsroot", want, sizeof(want));
  	uint32_t rw = 0;
  	PE_parse_boot_argn("ufsrw", &rw, sizeof(rw));
-@@ -619,15 +769,16 @@ y2s_ufs_init(void)
+@@ -619,15 +806,16 @@ y2s_ufs_init(void)
  	}
  	su.dma_pa = ptoa_64(pn);
  	su.lun = 0;
@@ -284,7 +361,7 @@ index a39c01e..b3059aa 100644
  	}
  	if (!error) {
  		error = ufs_find_partition(want);
-@@ -656,10 +807,12 @@ y2s_ufs_init(void)
+@@ -656,10 +844,12 @@ y2s_ufs_init(void)
  	    su.writable ? "read-write" : "read-only", su.dma_pa);
  	y2s_log_start();
  	y2s_sample_start();
