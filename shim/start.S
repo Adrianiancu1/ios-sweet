@@ -44,12 +44,16 @@ entry0:
 	 *   0x19050060 shadow update request: global update (bit 31)
 	 * Afterwards the panel follows the framebuffer, also for xnu later.
 	 */
-	/* Only on the phone (26 MHz timer): QEMU virt has no device there. */
+	/*
+	 * Not under QEMU virt (CNTFRQ 62.5 MHz), which has no device there.
+	 * Do not test for the S20's 26 MHz instead: its firmware may leave
+	 * CNTFRQ unset (the live DT gives clock-frequency explicitly).
+	 */
 	mrs	x7, cntfrq_el0
-	movz	x8, #0x18c, lsl #16
-	movk	x8, #0xba80
+	movz	x8, #0x3b9, lsl #16
+	movk	x8, #0xaca0		/* 62500000 */
 	cmp	x7, x8
-	b.ne	6f
+	b.eq	6f
 	movz	x7, #0x1905, lsl #16
 	movk	x7, #0x0070
 	ldr	w8, [x7]
