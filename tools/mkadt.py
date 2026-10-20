@@ -3,7 +3,7 @@
 Galaxy S20+ (y2s, SM-G986B, Exynos 990).
 
 Every address comes from the phone's live device tree (~/ios-s20/live.dts,
-taken from the running stock kernel). Usage:  mkadt.py OUT.adt [--dump] [--qemu]
+taken from the running stock kernel). Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--lowmem]
 
 --qemu: the same tree for QEMU virt (tools/qemu-y2s.py): same RAM and
 framebuffer addresses, but QEMU's GICv2 (-M virt,gic-version=2) and CNTFRQ.
@@ -20,6 +20,14 @@ import adt  # noqa: E402
 # carve-out (0x96000000-0x99200000). 512 MiB, 32 MiB aligned (one L2 block).
 PHYS_BASE = 0x9a000000
 MEM_SIZE = 0x20000000
+# Phone default: 4 GiB in the high DDR bank (live.dts memory 0x8_8000_0000 -
+# 0xa_ffff_ffff, contiguous). Static carve-outs there: sec_rdx_bootdev
+# 0x8_8000_0000 +0xad00000 (below) and el2_earlymem 0xa_fe80_0000 (above).
+# The UFS host cannot DMA at or above 0xa_0000_0000 (Samsung's ufshcd.c
+# bounces those: DMA_UPPER_ADDR), so the RAM stays below it. 32 MiB aligned.
+# --lowmem keeps the 512 MiB low-bank layout above (also used for --qemu).
+HIGH_PHYS_BASE = 0x88c000000
+HIGH_MEM_SIZE = 0x100000000
 # /arm-io children are relative to this; it must not be 0 (serial_init bails)
 SOC_BASE = 0x01000000
 
@@ -76,9 +84,9 @@ def node(name, props=(), children=()):
     return n
 
 
-def build(seed=None, qemu=False):
+def build(seed=None, qemu=False, lowmem=False):
     """qemu=True: same tree, but with QEMU virt's GICv2 and CNTFRQ (tools/qemu-y2s.py)."""
-    phys_base, mem_size = PHYS_BASE, MEM_SIZE
+    phys_base, mem_size = (PHYS_BASE, MEM_SIZE) if (qemu or lowmem) else (HIGH_PHYS_BASE, HIGH_MEM_SIZE)
     gicd, gicc, timebase = (QEMU_GICD, QEMU_GICC, QEMU_TIMEBASE) if qemu else (GICD, GICC, TIMEBASE)
     vtimer = QEMU_VTIMER_INTID if qemu else VTIMER_INTID
     seed = seed if seed is not None else os.urandom(64)
@@ -209,7 +217,7 @@ def build(seed=None, qemu=False):
 
 
 if __name__ == '__main__':
-    root = build(qemu='--qemu' in sys.argv)
+    root = build(qemu='--qemu' in sys.argv, lowmem='--lowmem' in sys.argv)
     blob = adt.serialize(root)
     open(sys.argv[1], 'wb').write(blob)
     if '--dump' in sys.argv:
