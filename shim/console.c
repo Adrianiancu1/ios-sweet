@@ -1,5 +1,5 @@
 /*
- * Minimal text console on the ABL splash framebuffer. With the MMU off
+ * Minimal text console on S-Boot's framebuffer. With the MMU off
  * every access is Device memory, so stay aligned (-mstrict-align).
  */
 #include "console.h"

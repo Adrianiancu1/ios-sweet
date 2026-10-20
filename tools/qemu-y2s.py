@@ -6,11 +6,12 @@
 Does what shim/loader.c does on the phone, but on the host: places the
 kernel segments, ADT and boot_args at their physical addresses and starts
 the CPU at a 6-instruction stub that jumps to the entry with x0 = boot_args.
-virt RAM starts at 0x40000000; with 4G it covers the phone's framebuffer
-(0x9c000000) and the kernel's phys_base (0xb0000000) as plain memory.
+virt RAM starts at 0x40000000; with 4G it covers the S20's framebuffer
+(0xf1000000) and the kernel's phys_base (0x9a000000) as plain memory.
+Build the ADT with tools/mkadt.py OUT --qemu (QEMU's GICv2 and CNTFRQ).
 
 After N seconds (or when the guest stops) it writes into OUTDIR:
-  fb.png     the 1080x2400 framebuffer (what the phone screen would show)
+  fb.png     the 1440x3200 framebuffer (what the phone screen would show)
   regs.txt   QEMU's view of CPU state
   qemu.log   exceptions with ESR/FAR/ELR (-d int,guest_errors)
 
@@ -22,7 +23,7 @@ An undecodable or blank screen returns 3 with --fail-on-panic.
 """
 import argparse, json, os, shutil, socket, struct, subprocess, sys, time, zlib
 
-FB_BASE, FB_W, FB_H = 0x9c000000, 1080, 2400
+FB_BASE, FB_W, FB_H = 0xf1000000, 1440, 3200
 FB_STRIDE = FB_W * 4
 PAGE = 0x4000
 STUB_PA = 0x40200000	# above the dtb QEMU places at RAM base
@@ -223,9 +224,12 @@ def main():
     ap.add_argument('--secs', type=float, default=20, help='Duration to run QEMU in seconds (default: 20)')
     ap.add_argument('--gdb', action='store_true', help='start halted, gdb stub on :1234, no timeout')
     ap.add_argument('--hmp', action='append', default=[], help='extra monitor command run after stop (repeatable), e.g. "x /8gx 0xfffffe..."')
-    ap.add_argument('--cpu', default='cortex-a76', help='QEMU CPU model (default: cortex-a76)')
-    ap.add_argument('--gic', choices=['2', '3'], default='3',
-                    help='GIC version; 2 needs an ADT from mkadt.py --qemu --gicv2 (default: 3)')
+    ap.add_argument('--cpu', default='max', help='QEMU CPU model (default: max; QEMU 6.2 has no cortex-a76)')
+    ap.add_argument('--shim', metavar='IMAGE',
+                    help='boot through the real shim (shim/out/Image) like S-Boot would: '
+                         'QEMU loads IMAGE as the kernel and PAYLOAD as the initrd')
+    ap.add_argument('--gic', choices=['2', '3'], default='2',
+                    help='GIC version; the S20 ADT (mkadt.py --qemu) is GICv2 (default: 2)')
     ap.add_argument('--kernel', help='matching unstripped kernel, for exact framebuffer text decoding (uses llvm-nm)')
     ap.add_argument('--fail-on-panic', action='store_true', help='exit 2 for a visible panic, 3 for incomplete/blank decoding; requires --kernel')
     ap.add_argument('--live-serial', action='store_true', help='stream serial console output to stdout in real time')
@@ -265,9 +269,12 @@ def main():
     out = os.path.abspath(a.outdir)
 
     phys_base, img, ba_pa, entry_pa = build_image(payload)
-    open(f'{out}/ram.bin', 'wb').write(img)
-    open(f'{out}/stub.bin', 'wb').write(stub(ba_pa, entry_pa))
-    print(f'phys_base={phys_base:#x} boot_args={ba_pa:#x} entry={entry_pa:#x}', file=sys.stderr)
+    if not a.shim:
+        open(f'{out}/ram.bin', 'wb').write(img)
+        open(f'{out}/stub.bin', 'wb').write(stub(ba_pa, entry_pa))
+        print(f'phys_base={phys_base:#x} boot_args={ba_pa:#x} entry={entry_pa:#x}', file=sys.stderr)
+    else:
+        print(f'shim boot: {a.shim} + initrd {a.payload}; kernel goes to {phys_base:#x}', file=sys.stderr)
 
     mon = f'{out}/mon.sock'
     if os.path.exists(mon):
@@ -277,10 +284,14 @@ def main():
     ram_gib = max(4, -(-(phys_base + mem_size - 0x40000000) // (1 << 30)))
     cmd = ['qemu-system-aarch64', '-M', f'virt,gic-version={a.gic}', '-cpu', a.cpu, '-smp', '1', '-m', f'{ram_gib}G',
            '-nographic', '-serial', f'file:{out}/serial.txt', '-qmp', f'unix:{mon},server,nowait',
-           '-d', 'int,guest_errors,unimp', '-D', f'{out}/qemu.log', '-no-reboot',
-           '-device', f'loader,file={out}/ram.bin,addr={phys_base:#x},force-raw=on',
-           '-device', f'loader,file={out}/stub.bin,addr={STUB_PA:#x},force-raw=on',
-           '-device', f'loader,addr={STUB_PA:#x},cpu-num=0']
+           '-d', 'int,guest_errors,unimp', '-D', f'{out}/qemu.log', '-no-reboot']
+    if a.shim:
+        # Linux arm64 boot protocol, as S-Boot: x0 = DTB with /chosen initrd.
+        cmd += ['-kernel', a.shim, '-initrd', a.payload]
+    else:
+        cmd += ['-device', f'loader,file={out}/ram.bin,addr={phys_base:#x},force-raw=on',
+                '-device', f'loader,file={out}/stub.bin,addr={STUB_PA:#x},force-raw=on',
+                '-device', f'loader,addr={STUB_PA:#x},cpu-num=0']
     if a.gdb:
         cmd += ['-S', '-gdb', 'tcp::1234']
 

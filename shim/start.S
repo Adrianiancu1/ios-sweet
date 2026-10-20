@@ -1,15 +1,16 @@
 /*
- * y2s boot shim entry: arm64 Linux Image header so Qualcomm ABL treats
- * us like a kernel. ABL enters at EL1, MMU/D-cache off, x0 = DTB pointer.
+ * y2s boot shim entry: arm64 Linux Image header so Samsung S-Boot treats us
+ * like a kernel. Entered at EL1, MMU/D-cache off, x0 = DTB pointer.
+ * text_offset/flags as in the S20 bare-metal tests that S-Boot ran.
  */
 	.section .text.head, "ax"
 	.globl _head
 _head:
 	b	_start			/* code0 */
 	.long	0			/* code1 */
-	.quad	0			/* text_offset */
+	.quad	0x80000			/* text_offset */
 	.quad	_end			/* image_size (linked at 0) */
-	.quad	0xa			/* flags: LE, 4K pages, place anywhere */
+	.quad	0x2			/* flags: LE, 4K pages */
 	.quad	0			/* res2 */
 	.quad	0			/* res3 */
 	.quad	0			/* res4 */
@@ -20,7 +21,7 @@ _head:
 	.globl _start
 _start:
 	msr	daifset, #0xf
-	mov	x19, x0			/* DTB pointer from ABL */
+	mov	x19, x0			/* DTB pointer from S-Boot */
 	msr	spsel, #1
 	adr	x1, _stack_top
 	mov	sp, x1

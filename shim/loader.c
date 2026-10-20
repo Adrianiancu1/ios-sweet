@@ -2,7 +2,7 @@
  * Milestone 4: act as iBoot for xnu.
  *
  * mkpayload.py already resolved the kernel's chained fixups and built the
- * ADT, so this only has to: find the payload in the ABL ramdisk, copy the
+ * ADT, so this only has to: find the payload in the boot.img ramdisk, copy the
  * segments to phys_base + (vmaddr - virt_base), place the ADT and
  * boot_args behind the kernel, and jump to the entry point with the MMU
  * and caches off, x0 = boot_args (physical).
