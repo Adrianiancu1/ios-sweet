@@ -22,7 +22,7 @@ _head:
  * right behind the header, constants built in registers (no literal pool,
  * no memory loads), before anything else. Rows of S-Boot's framebuffer
  * (0xf1000000, 1440 px, 5760 bytes per row):
- *   rows   0- 63  green   this code runs
+ *   rows   0- 63  green   this code runs (then DECON is unmasked, see below)
  *   rows  64-127  blue    a word at the far end of the shim image reads back
  *                         right (red: S-Boot did not load/clean all of it)
  *   rows 128-191  blue    a payload follows the image (yellow: none)
@@ -35,6 +35,34 @@ entry0:
 	movz	w3, #0xff00, lsl #16
 	movk	w3, #0xff00		/* green */
 	bl	band
+	/*
+	 * The S20 panel only shows framebuffer writes once DECON's hardware
+	 * trigger is unmasked (bare-metal test 12 vs the same image without
+	 * these writes). Exynos 9830 DECON0 (regs from Samsung cal_9830):
+	 *   0x19050070 trigger control: set HW trigger enable (bit 0), clear
+	 *              the trigger mask (bit 4)
+	 *   0x19050060 shadow update request: global update (bit 31)
+	 * Afterwards the panel follows the framebuffer, also for xnu later.
+	 */
+	/* Only on the phone (26 MHz timer): QEMU virt has no device there. */
+	mrs	x7, cntfrq_el0
+	movz	x8, #0x18c, lsl #16
+	movk	x8, #0xba80
+	cmp	x7, x8
+	b.ne	6f
+	movz	x7, #0x1905, lsl #16
+	movk	x7, #0x0070
+	ldr	w8, [x7]
+	orr	w8, w8, #0x1
+	bic	w8, w8, #0x10
+	str	w8, [x7]
+	movz	x7, #0x1905, lsl #16
+	movk	x7, #0x0060
+	ldr	w8, [x7]
+	orr	w8, w8, #0x80000000
+	str	w8, [x7]
+	dsb	sy
+6:
 	adr	x4, far_probe
 	ldr	w5, [x4]
 	movz	w6, #0x5a5a, lsl #16
