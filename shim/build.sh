@@ -39,11 +39,17 @@ truncate -s "$size" out/Image
 # The loader looks for the payload at _end, i.e. right after the padded image.
 cp out/Image out/Image.bare
 cat "$PAYLOAD" >> out/Image
-mkbootimg --header_version 2 --os_version 14.0.0 --os_patch_level 2024-10 \
+# The AOSP mkbootimg.py that built the S20 bare-metal tests, else the one in PATH.
+if [ -f "$HOME/mkbootimg/mkbootimg.py" ]; then
+	MKBOOTIMG=(python3 "$HOME/mkbootimg/mkbootimg.py")
+else
+	MKBOOTIMG=(mkbootimg)
+fi
+"${MKBOOTIMG[@]}" --header_version 2 --os_version 14.0.0 --os_patch_level 2024-10 \
 	--kernel out/Image --ramdisk "$RAMDISK" --dtb "$DTB" \
 	--pagesize 0x00000800 --base 0x00000000 --kernel_offset 0x10008000 \
 	--ramdisk_offset 0x11000000 --second_offset 0x00000000 --tags_offset 0x10000100 \
-	--dtb_offset 0x0000000010000000 --board '' --cmdline '' -o out/y2s-boot.img
+	--dtb_offset 0x0000000010000000 --board '' --cmdline '' --output out/y2s-boot.img
 # Some mkbootimg builds silently drop --os_patch_level (the first S20 images
 # had 0 and S-Boot never started them; every image it did start had 2024-10).
 # Set os_version 14.0.0 + patch level 2024-10 in the header directly.
