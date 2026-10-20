@@ -113,29 +113,34 @@ def build(seed=None, qemu=False, lowmem=False):
     ], [node('memory-map', [ph()]),
         node('asmb', [ph(), ('lp-sip0', u64(0x6f)), ('lp-sip1', u32(1))])])
 
-    # Boot CPU only for now (boot with cpus=1). live.dts MPIDRs: cpu@0000-0003
-    # (Cortex-A55), 0004-0005, 0100-0101; Y2SCPU still expects Aff0 == 0, so
-    # the secondaries are left out until SMP is adapted.
-    cpu_nodes = [node('cpu0', [
-        ph(),
-        ('device_type', cstr('cpu')),
-        ('compatible', cstr('qcom,kryo470') + cstr('ARM,v8')),  # Y2SCPU matches this
-        ('reg', u32(0)),             # MPIDR of the boot CPU
-        ('cpu-id', u32(0)),
-        ('cluster-id', u32(0)),
-        ('cluster-type', u32(0)),    # homogeneous CLUSTER_TYPE_SMP
-        ('die-cluster-id', u32(0)),
-        ('cluster-core-id', u32(0)),
-        ('l2-cache-id', u32(0)),
-        ('l3-cache-id', u32(0)),
-        ('state', cstr('running')),
-        ('timebase-frequency', u32(timebase)),
-        ('clock-frequency', u32(2002000000)),
-        ('bus-frequency', u32(100000000)),
-        ('memory-frequency', u32(2750000000)),
-        ('peripheral-frequency', u32(timebase)),
-        ('fixed-frequency', u32(timebase)),
-    ])]
+    # live.dts /cpus: cpu@0000-0003 "arm,ananke" (Cortex-A55), cpu@0004-0005
+    # "arm,enyo" (Cortex-A76), cpu@0100-0101 "arm,lion" (Samsung M5, left out
+    # until their 16K-granule support is checked). reg = MPIDR. Boot-arg
+    # cpus=N starts the first N (cpu0 = MPIDR 0, the boot CPU). QEMU: 1 CPU.
+    cores = [(0x000, 2002000000), (0x001, 2002000000), (0x002, 2002000000), (0x003, 2002000000),
+             (0x004, 2504000000), (0x005, 2504000000)]
+    cpu_nodes = []
+    for i, (mpidr, hz) in enumerate(cores[:1] if qemu else cores):
+        cpu_nodes.append(node(f'cpu{i}', [
+            ph(),
+            ('device_type', cstr('cpu')),
+            ('compatible', cstr('qcom,kryo470') + cstr('ARM,v8')),  # Y2SCPU matches this
+            ('reg', u32(mpidr)),
+            ('cpu-id', u32(i)),
+            ('cluster-id', u32(0)),
+            ('cluster-type', u32(0)),    # homogeneous CLUSTER_TYPE_SMP
+            ('die-cluster-id', u32(0)),
+            ('cluster-core-id', u32(i)),
+            ('l2-cache-id', u32(i)),
+            ('l3-cache-id', u32(0)),
+            ('state', cstr('running' if i == 0 else 'stopped')),
+            ('timebase-frequency', u32(timebase)),
+            ('clock-frequency', u32(hz)),
+            ('bus-frequency', u32(100000000)),
+            ('memory-frequency', u32(2750000000)),
+            ('peripheral-frequency', u32(timebase)),
+            ('fixed-frequency', u32(timebase)),
+        ]))
     cpus = node('cpus', [ph(), ('#address-cells', u32(1)),
                          ('#size-cells', u32(0))], cpu_nodes)
 
