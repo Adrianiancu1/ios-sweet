@@ -187,7 +187,7 @@ def build(seed=None, qemu=False):
 
     # Identity of the iPhone X whose userland runs here: compatible[0] is
     # hw.model/hw.target (D22AP), model is hw.machine/hw.product
-    # (iPhone10,3). 'xiaomi,y2s' stays for Y2SPlatformExpert matching.
+    # (iPhone10,3). 'samsung,y2s' is what Y2SPlatformExpert matches.
     return node('device-tree', [
         ph(),
         ('compatible', cstr('D22AP') + cstr('iPhone10,3') + cstr('samsung,y2s') + cstr('samsung,exynos990') + cstr('AppleARM')),

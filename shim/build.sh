@@ -22,7 +22,10 @@ done
 # header's image_size (start.o, linked at 0) may be an absolute address.
 abs=$(aarch64-linux-gnu-readelf -r out/shim.o out/console.o out/fdt.o out/loader.o | grep -c ABS64 || true)
 [ "$abs" = 0 ] || { echo "error: $abs absolute relocations in C objects" >&2; exit 1; }
-$CC $CFLAGS -static -T shim.ld -Wl,--build-id=none -Wl,--no-warn-rwx-segments -Wl,-N \
+# binutils < 2.39 (Mint 21 / Ubuntu 22.04) has no --no-warn-rwx-segments.
+LDWARN=""
+aarch64-linux-gnu-ld --help 2>/dev/null | grep -q no-warn-rwx-segments && LDWARN="-Wl,--no-warn-rwx-segments"
+$CC $CFLAGS -static -T shim.ld -Wl,--build-id=none $LDWARN -Wl,-N \
 	out/start.o out/shim.o out/console.o out/fdt.o out/loader.o -o out/shim.elf
 $OBJCOPY -O binary out/shim.elf out/Image
 # Pad to image_size so .bss/stacks exist as zeroed bytes.

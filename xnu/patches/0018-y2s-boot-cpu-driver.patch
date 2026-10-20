@@ -178,7 +178,7 @@ diff --git a/iokit/KernelConfigTables.cpp b/iokit/KernelConfigTables.cpp
 --- a/iokit/KernelConfigTables.cpp
 +++ b/iokit/KernelConfigTables.cpp
 @@ -41,6 +41,12 @@
-     "     'IONameMatch'     = 'xiaomi,y2s';"
+     "     'IONameMatch'     = 'samsung,y2s';"
      "     'IOProbeScore'    = 10000:32;"
      "   },"
 +    "   {"
