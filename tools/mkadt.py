@@ -36,6 +36,8 @@ TIMEBASE = 26000000
 VTIMER_INTID = 27
 GICD, GICC = 0x10101000, 0x10102000
 GICD_SIZE, GICC_SIZE = 0x1000, 0x2000
+# UFS: live.dts reg = <0x13100000 0x200>, <0x13101100 0x200> (HCI, vendor HCI), ...
+UFS_HCI, UFS_VS_HCI = 0x13100000, 0x13101100
 # QEMU virt -M virt,gic-version=2: GICD 0x08000000, GICC 0x08010000; CNTFRQ 62.5 MHz
 QEMU_GICD, QEMU_GICC, QEMU_TIMEBASE, QEMU_VTIMER_INTID = 0x08000000, 0x08010000, 62500000, 27
 
@@ -168,8 +170,14 @@ def build(seed=None, qemu=False):
         ('stride', u32(FB_STRIDE)),
     ])
 
-    # No /y2s-ufs node: the UFS driver (and the Qualcomm keys/touch/USB
-    # drivers it starts) only run when it exists. Exynos UFS is not ported.
+    # Internal UFS (live.dts ufs@0x13100000 "samsung,exynos-ufs"): HCI and
+    # the vendor HCI block. Absolute addresses (not under /arm-io). The
+    # driver (xnu patch 0084) only starts for rd=ufsroot0.
+    ufs = node('y2s-ufs', [
+        ph(),
+        ('compatible', cstr('samsung,exynos-ufs')),
+        ('reg', u64(UFS_HCI, 0x200, UFS_VS_HCI, 0x200)),
+    ])
 
     defaults = node('defaults', [ph(), ('no-effaceable-storage', u32(1))])
 
@@ -197,7 +205,7 @@ def build(seed=None, qemu=False):
         ('manufacturer', cstr('Apple Inc.')),
         ('#address-cells', u32(2)),
         ('#size-cells', u32(2)),
-    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product)
+    ], [chosen, defaults, cpus, arm_io, fbcon, buttons] + product + ([] if qemu else [ufs]))
 
 
 if __name__ == '__main__':
