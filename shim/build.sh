@@ -39,21 +39,37 @@ truncate -s "$size" out/Image
 # The loader looks for the payload at _end, i.e. right after the padded image.
 cp out/Image out/Image.bare
 cat "$PAYLOAD" >> out/Image
+# Linux Image header image_size (offset 16) must cover the whole file: the
+# stock kernel's does, and S-Boot may place things right behind image_size.
+# Round up to 2 MiB plus 2 MiB of slack, like the bare-metal tests' 0x200000.
+python3 - out/Image out/Image.bare <<'PY'
+import os, struct, sys
+for p in sys.argv[1:]:
+    n = os.path.getsize(p)
+    size = ((n + 0x1fffff) & ~0x1fffff) + 0x200000
+    with open(p, 'r+b') as f:
+        f.seek(16)
+        f.write(struct.pack('<Q', size))
+    print('%s: %d bytes, header image_size %#x' % (p, n, size))
+PY
 # The AOSP mkbootimg.py that built the S20 bare-metal tests, else the one in PATH.
 if [ -f "$HOME/mkbootimg/mkbootimg.py" ]; then
 	MKBOOTIMG=(python3 "$HOME/mkbootimg/mkbootimg.py")
 else
 	MKBOOTIMG=(mkbootimg)
 fi
+# y2s-boot.img: shim + payload. y2s-shimonly-boot.img: the shim alone (it
+# must show a green band and a red "no Y2SXNU64 payload" screen, then reset).
+for img in y2s-boot:Image y2s-shimonly-boot:Image.bare; do
 "${MKBOOTIMG[@]}" --header_version 2 --os_version 14.0.0 --os_patch_level 2024-10 \
-	--kernel out/Image --ramdisk "$RAMDISK" --dtb "$DTB" \
+	--kernel out/${img#*:} --ramdisk "$RAMDISK" --dtb "$DTB" \
 	--pagesize 0x00000800 --base 0x00000000 --kernel_offset 0x10008000 \
 	--ramdisk_offset 0x11000000 --second_offset 0x00000000 --tags_offset 0x10000100 \
-	--dtb_offset 0x0000000010000000 --board '' --cmdline '' --output out/y2s-boot.img
+	--dtb_offset 0x0000000010000000 --board '' --cmdline '' --output out/${img%%:*}.img
 # Some mkbootimg builds silently drop --os_patch_level (the first S20 images
 # had 0 and S-Boot never started them; every image it did start had 2024-10).
 # Set os_version 14.0.0 + patch level 2024-10 in the header directly.
-python3 - out/y2s-boot.img <<'PY'
+python3 - out/${img%%:*}.img <<'PY'
 import struct, sys
 p = sys.argv[1]
 b = bytearray(open(p, 'rb').read())
@@ -61,6 +77,7 @@ assert b[:8] == b'ANDROID!', 'not a boot image'
 want = (14 << 25) | (0 << 18) | (0 << 11) | ((2024 - 2000) << 4) | 10
 struct.pack_into('<I', b, 44, want)
 open(p, 'wb').write(b)
-print('os_version field: %#x' % struct.unpack_from('<I', b, 44)[0])
+print('%s os_version field: %#x' % (p, struct.unpack_from('<I', b, 44)[0]))
 PY
-ls -l out/Image.bare out/Image out/y2s-boot.img
+done
+ls -l out/y2s-boot.img out/y2s-shimonly-boot.img
