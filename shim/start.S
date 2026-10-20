@@ -22,6 +22,17 @@ _head:
 _start:
 	msr	daifset, #0xf
 	mov	x19, x0			/* DTB pointer from S-Boot */
+	/*
+	 * First sign of life, before stack or C: a green band over the top
+	 * 64 rows of S-Boot's framebuffer (0xf1000000, 1440 px wide).
+	 */
+	ldr	x1, =0xf1000000
+	ldr	x2, =(1440 * 64)
+	ldr	w3, =0xff00ff00
+0:	str	w3, [x1], #4
+	subs	x2, x2, #1
+	b.ne	0b
+	dsb	sy
 	msr	spsel, #1
 	adr	x1, _stack_top
 	mov	sp, x1

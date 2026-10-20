@@ -2,7 +2,7 @@
  * Milestone 4: act as iBoot for xnu.
  *
  * mkpayload.py already resolved the kernel's chained fixups and built the
- * ADT, so this only has to: find the payload in the boot.img ramdisk, copy the
+ * ADT, so this only has to: find the payload (after the image or in the ramdisk), copy the
  * segments to phys_base + (vmaddr - virt_base), place the ADT and
  * boot_args behind the kernel, and jump to the entry point with the MMU
  * and caches off, x0 = boot_args (physical).
@@ -76,14 +76,35 @@ static int magic_ok(const char *m)
 
 typedef void (*xnu_entry_t)(uint64_t boot_args_pa);
 
+extern char _end[];	/* end of the shim image (shim.ld); a payload may follow it */
+
+static uint64_t payload_size(const struct payload *p)
+{
+	uint64_t end = p->adt_off + p->adt_size;
+	for (uint32_t i = 0; i < p->nsegs; i++)
+		if (p->segs[i].file_off + p->segs[i].file_size > end)
+			end = p->segs[i].file_off + p->segs[i].file_size;
+	return end;
+}
+
 const char *loader_boot(uintptr_t dtb)
 {
 	uint64_t rd_start, rd_end;
 
-	if (!fdt_chosen_u64(dtb, "linux,initrd-start", &rd_start) ||
-	    !fdt_chosen_u64(dtb, "linux,initrd-end", &rd_end))
-		return "no initrd in /chosen";
-	con_hex2("INITRD", "lo=", rd_start, "hi=", rd_end);
+	/*
+	 * The payload is appended to the shim image (shim/build.sh, the boot.img
+	 * ramdisk stays the stock one), or else it is the boot.img ramdisk.
+	 */
+	rd_start = (uintptr_t)_end;
+	if (magic_ok(((const struct payload *)rd_start)->magic)) {
+		rd_end = rd_start + payload_size((const struct payload *)rd_start);
+		con_hex2("PAYLOAD", "lo=", rd_start, "hi=", rd_end);
+	} else {
+		if (!fdt_chosen_u64(dtb, "linux,initrd-start", &rd_start) ||
+		    !fdt_chosen_u64(dtb, "linux,initrd-end", &rd_end))
+			return "no payload after the image, no initrd";
+		con_hex2("INITRD", "lo=", rd_start, "hi=", rd_end);
+	}
 
 	const struct payload *p = (const struct payload *)rd_start;
 	if (!magic_ok(p->magic))
