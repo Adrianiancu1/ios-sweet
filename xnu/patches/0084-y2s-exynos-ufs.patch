@@ -1,5 +1,5 @@
 diff --git a/bsd/dev/y2s_ufs.c b/bsd/dev/y2s_ufs.c
-index a39c01e..a48cd3b 100644
+index a39c01e..42c3a5e 100644
 --- a/bsd/dev/y2s_ufs.c
 +++ b/bsd/dev/y2s_ufs.c
 @@ -14,6 +14,15 @@
@@ -26,7 +26,17 @@ index a39c01e..a48cd3b 100644
  
  #define HCS_DP          (1u << 0)
  #define HCS_UTRLRDY     (1u << 1)
-@@ -84,14 +94,30 @@ struct utrd {
+@@ -72,7 +82,8 @@ extern void y2s_usb_probe(void);
+ #define UFS_BLOCK       4096u
+ #define BOUNCE_SIZE     (1u << 20)
+ #define PRDT_CHUNK      (256u << 10)            /* PRDT byte count field: 18 bits */
+-#define PRDT_MAX        (BOUNCE_SIZE / PRDT_CHUNK)
++#define PRDT_CHUNK_EXYNOS (4u << 10)            /* HCI_TXPRDT_ENTRY_SIZE 12: 2^12 per entry */
++#define PRDT_MAX        (BOUNCE_SIZE / PRDT_CHUNK_EXYNOS)
+ #define CMD_TIMEOUT_NS  (5ull * NSEC_PER_SEC)
+ #define CMD_SPIN_NS     (50ull * NSEC_PER_USEC)
+ #define CMD_SLEEP_NS    (200ull * NSEC_PER_USEC)
+@@ -84,22 +95,42 @@ struct utrd {
  	uint32_t prdt;          /* [31:16] PRDT offset (DWORDs), [15:0] entries */
  };
  
@@ -60,7 +70,10 @@ index a39c01e..a48cd3b 100644
  /* Layout of the contiguous DMA allocation. */
  #define DMA_UTRL        0x0000                  /* 1 KiB aligned */
  #define DMA_UCD         0x1000                  /* 128 byte aligned */
-@@ -100,6 +126,9 @@ struct ucd {
+-#define DMA_BOUNCE      0x4000
++#define DMA_BOUNCE      0x10000                 /* UCD with 256 x 128-byte PRDT entries before */
+ #define DMA_SIZE        (DMA_BOUNCE + BOUNCE_SIZE)
++_Static_assert(DMA_UCD + sizeof(struct ucd) <= DMA_BOUNCE, "UCD overlaps the bounce buffer");
  
  static struct {
  	vm_offset_t regs;
@@ -70,7 +83,7 @@ index a39c01e..a48cd3b 100644
  	vm_offset_t dma;                        /* kernel VA of the DMA allocation */
  	uint64_t dma_pa;
  	uint8_t lun;
-@@ -112,8 +141,15 @@ static struct {
+@@ -112,8 +143,15 @@ static struct {
  	int bmajor, cmajor;
  	dev_t bdev;
  	bool ready;
@@ -86,11 +99,19 @@ index a39c01e..a48cd3b 100644
  static LCK_GRP_DECLARE(y2s_ufs_grp, "y2s_ufs");
  static LCK_MTX_DECLARE(y2s_ufs_lock, &y2s_ufs_grp);
  
-@@ -145,8 +181,10 @@ dma_clean(uint32_t off, uint32_t len)
+@@ -145,8 +183,18 @@ dma_clean(uint32_t off, uint32_t len)
   * One SCSI command in slot 0, data (if any) to/from the bounce buffer
   * (to the device when write is set). Returns 0 or an errno.
   */
 +static int ufs_take_over_host(void);
++
++/* Bytes of PRDT a transfer of len bytes uses. */
++static uint32_t
++n_prdt_bytes(uint32_t len)
++{
++	uint32_t step = su.exynos ? PRDT_CHUNK_EXYNOS : PRDT_CHUNK;
++	return ((len + step - 1) / step) * su.prd_size;
++}
 +
  static int
 -ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
@@ -98,7 +119,7 @@ index a39c01e..a48cd3b 100644
  {
  	struct utrd *utrd = (struct utrd *)(su.dma + DMA_UTRL);
  	struct ucd *ucd = (struct ucd *)(su.dma + DMA_UCD);
-@@ -158,7 +196,7 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
+@@ -158,7 +206,7 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
  
  	ucd->cmd[0] = 0x01;                     /* COMMAND UPIU */
  	ucd->cmd[1] = len ? (write ? 0x20 : 0x40) : 0x00;      /* W: data out, R: data in */
@@ -107,7 +128,7 @@ index a39c01e..a48cd3b 100644
  	ucd->cmd[3] = ++su.tag;
  	ucd->cmd[12] = (uint8_t)(len >> 24);
  	ucd->cmd[13] = (uint8_t)(len >> 16);
-@@ -171,16 +209,22 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
+@@ -171,16 +219,23 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
  	utrd->dw2 = 0x0f;                       /* OCS invalid until updated */
  	utrd->ucdba = (uint32_t)ucd_pa;
  	utrd->ucdbau = (uint32_t)(ucd_pa >> 32);
@@ -115,11 +136,14 @@ index a39c01e..a48cd3b 100644
 +	utrd->resp = su.exynos ? (512u << 16 | 512u) : ((512u / 4) << 16 | (512u / 4));
  	if (len) {
  		uint32_t n = 0;
- 		for (uint32_t done = 0; done < len; done += PRDT_CHUNK, n++) {
- 			uint32_t chunk = MIN(PRDT_CHUNK, len - done);
+-		for (uint32_t done = 0; done < len; done += PRDT_CHUNK, n++) {
+-			uint32_t chunk = MIN(PRDT_CHUNK, len - done);
 -			ucd->prdt[n].addr_lo = (uint32_t)(bounce_pa + done);
 -			ucd->prdt[n].addr_hi = (uint32_t)((bounce_pa + done) >> 32);
 -			ucd->prdt[n].dbc = chunk - 1;
++		uint32_t step = su.exynos ? PRDT_CHUNK_EXYNOS : PRDT_CHUNK;
++		for (uint32_t done = 0; done < len; done += step, n++) {
++			uint32_t chunk = MIN(step, len - done);
 +			struct prd *prd = (struct prd *)(void *)&ucd->prdt[n * su.prd_size];
 +			prd->addr_lo = (uint32_t)(bounce_pa + done);
 +			prd->addr_hi = (uint32_t)((bounce_pa + done) >> 32);
@@ -134,16 +158,16 @@ index a39c01e..a48cd3b 100644
  	}
  
  	if (su.cache) {
-@@ -189,7 +233,7 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
+@@ -189,7 +244,7 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
  		dma_sync(DMA_UCD + offsetof(struct ucd, resp), sizeof(ucd->resp));
  		if (len) {
  			dma_clean(DMA_UCD + offsetof(struct ucd, prdt),
 -			    (utrd->prdt & 0xffff) * sizeof(ucd->prdt[0]));
-+			    PRDT_MAX * su.prd_size);
++			    n_prdt_bytes(len));
  		}
  	} else {
  		dma_sync(DMA_UTRL, sizeof(*utrd));
-@@ -205,6 +249,7 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
+@@ -205,6 +260,7 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
  	__builtin_arm_dsb(0xf);
  
  	ufs_wr(REG_UTRLDBR, 1);
@@ -151,7 +175,7 @@ index a39c01e..a48cd3b 100644
  	uint64_t deadline;
  	nanoseconds_to_absolutetime(CMD_TIMEOUT_NS, &deadline);
  	deadline += mach_absolute_time();
-@@ -219,7 +264,8 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
+@@ -219,7 +275,8 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
  	while (ufs_rd(REG_UTRLDBR) & 1) {
  		uint64_t now = mach_absolute_time();
  		if (now > deadline) {
@@ -161,7 +185,7 @@ index a39c01e..a48cd3b 100644
  			printf("Y2S UFS: command 0x%02x timed out\n", cdb[0]);
  			return ETIMEDOUT;
  		}
-@@ -235,7 +281,8 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
+@@ -235,7 +292,8 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
  		}
  	}
  	__builtin_arm_dsb(0xf);
@@ -171,7 +195,7 @@ index a39c01e..a48cd3b 100644
  
  	dma_sync(DMA_UTRL, sizeof(*utrd));
  	if (su.cache) {
-@@ -248,6 +295,20 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
+@@ -248,6 +306,20 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
  	}
  
  	uint32_t ocs = utrd->dw2 & 0xff;
@@ -192,7 +216,7 @@ index a39c01e..a48cd3b 100644
  	if (ocs || ucd->resp[0] != 0x21 || ucd->resp[6] || ucd->resp[7]) {
  		printf("Y2S UFS: command 0x%02x failed: ocs 0x%x upiu 0x%x response 0x%x status 0x%x\n",
  		    cdb[0], ocs, ucd->resp[0], ucd->resp[6], ucd->resp[7]);
-@@ -256,6 +317,28 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
+@@ -256,6 +328,28 @@ ufs_scsi(const uint8_t *cdb, unsigned cdb_len, uint32_t len, bool write)
  	return 0;
  }
  
@@ -221,7 +245,7 @@ index a39c01e..a48cd3b 100644
  /* READ(10) of count device blocks at lba into the bounce buffer. */
  static int
  ufs_read_blocks(uint64_t lba, uint32_t count)
-@@ -353,6 +436,96 @@ ufs_find_partition(const char *want)
+@@ -353,6 +447,96 @@ ufs_find_partition(const char *want)
  	return ENOENT;
  }
  
@@ -318,7 +342,7 @@ index a39c01e..a48cd3b 100644
  static int
  ufs_take_over_host(void)
  {
-@@ -598,6 +771,20 @@ y2s_ufs_init(void)
+@@ -598,6 +782,20 @@ y2s_ufs_init(void)
  		printf("Y2S UFS: no /y2s-ufs node in the device tree\n");
  		return ENXIO;
  	}
@@ -339,7 +363,7 @@ index a39c01e..a48cd3b 100644
  	PE_parse_boot_argn("ufsroot", want, sizeof(want));
  	uint32_t rw = 0;
  	PE_parse_boot_argn("ufsrw", &rw, sizeof(rw));
-@@ -619,15 +806,16 @@ y2s_ufs_init(void)
+@@ -619,15 +817,16 @@ y2s_ufs_init(void)
  	}
  	su.dma_pa = ptoa_64(pn);
  	su.lun = 0;
@@ -361,7 +385,7 @@ index a39c01e..a48cd3b 100644
  	}
  	if (!error) {
  		error = ufs_find_partition(want);
-@@ -656,10 +844,12 @@ y2s_ufs_init(void)
+@@ -656,10 +855,12 @@ y2s_ufs_init(void)
  	    su.writable ? "read-write" : "read-only", su.dma_pa);
  	y2s_log_start();
  	y2s_sample_start();
