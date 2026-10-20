@@ -2,7 +2,12 @@
 """Build the minimal Apple Device Tree that the SWEET xnu needs to boot.
 
 Only what the early boot path actually reads (see NOTES.md); every MMIO
-address comes from the sweet live FDT. Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--highmem]
+address comes from the sweet live FDT. Usage:  mkadt.py OUT.adt [--dump] [--qemu] [--highmem] [--gicv2]
+
+--gicv2: GICv2 (GIC-400) node instead of GICv3 (xnu patch 0082). With --qemu it
+uses QEMU virt's gic-version=2 addresses (tools/qemu-sweet.py --gic 2); without,
+the Exynos 990 GIC-400. Only the GIC node changes: memory, framebuffer, UFS and
+the CPU nodes are still sweet's.
 """
 import hashlib, os, struct, sys
 
@@ -32,6 +37,13 @@ VTIMER_INTID = 19
 # QEMU virt (-M virt,gic-version=3 -cpu cortex-a76): GICD/GICR and the generic timer's CNTFRQ
 QEMU_GICD, QEMU_GICR, QEMU_TIMEBASE = 0x08000000, 0x080a0000, 62500000
 QEMU_VTIMER_INTID = 27
+# GICv2 (GIC-400): reg = GICD, GICC. Exynos 990 from the mainline exynos990.dtsi
+# (arm,gic-400 @ 0x10101000 / 0x10102000; timer <GIC_PPI 11> = INTID 27).
+# GIC-400's CPU interface is 8K (GICC_DIR at +0x1000).
+EXYNOS990_GICD, EXYNOS990_GICC, EXYNOS990_VTIMER_INTID = 0x10101000, 0x10102000, 27
+GICV2_GICD_SIZE, GICV2_GICC_SIZE = 0x1000, 0x2000
+# QEMU virt -M virt,gic-version=2: GICD 0x08000000, GICC 0x08010000
+QEMU_GICV2_GICD, QEMU_GICV2_GICC = 0x08000000, 0x08010000
 
 BOOT_MANIFEST_HASH = hashlib.sha384(b'sweet boot manifest').digest()
 
@@ -68,7 +80,7 @@ def node(name, props=(), children=()):
     return n
 
 
-def build(seed=None, qemu=False, highmem=False):
+def build(seed=None, qemu=False, highmem=False, gicv2=False):
     """qemu=True: same tree, but with QEMU virt's GIC addresses and CNTFRQ (tools/qemu-sweet.py)."""
     phys_base, mem_size = (HIGH_PHYS_BASE, HIGH_MEM_SIZE) if highmem else (PHYS_BASE, MEM_SIZE)
     gicd, gicr, timebase = (QEMU_GICD, QEMU_GICR, QEMU_TIMEBASE) if qemu else (GICD, GICR, TIMEBASE)
@@ -148,13 +160,23 @@ def build(seed=None, qemu=False, highmem=False):
     cpus = node('cpus', [ph(), ('#address-cells', u32(1)),
                          ('#size-cells', u32(0))], cpu_nodes)
 
-    gic = node('gic', [
-        ph(),
-        ('compatible', cstr('arm,gic-v3')),
-        ('interrupt-controller', b''),
-        ('virtual-timer-intid', u32(QEMU_VTIMER_INTID if qemu else VTIMER_INTID)),
-        ('reg', u64(gicd - SOC_BASE, GICD_SIZE, gicr - SOC_BASE, GICR_SIZE)),
-    ])
+    if gicv2:
+        v2d, v2c = (QEMU_GICV2_GICD, QEMU_GICV2_GICC) if qemu else (EXYNOS990_GICD, EXYNOS990_GICC)
+        gic = node('gic', [
+            ph(),
+            ('compatible', cstr('arm,gic-400') + cstr('arm,cortex-a15-gic')),
+            ('interrupt-controller', b''),
+            ('virtual-timer-intid', u32(QEMU_VTIMER_INTID if qemu else EXYNOS990_VTIMER_INTID)),
+            ('reg', u64(v2d - SOC_BASE, GICV2_GICD_SIZE, v2c - SOC_BASE, GICV2_GICC_SIZE)),
+        ])
+    else:
+        gic = node('gic', [
+            ph(),
+            ('compatible', cstr('arm,gic-v3')),
+            ('interrupt-controller', b''),
+            ('virtual-timer-intid', u32(QEMU_VTIMER_INTID if qemu else VTIMER_INTID)),
+            ('reg', u64(gicd - SOC_BASE, GICD_SIZE, gicr - SOC_BASE, GICR_SIZE)),
+        ])
     arm_io = node('arm-io', [
         ph(),
         ('device_type', cstr('sweet-io')),
@@ -228,7 +250,8 @@ def build(seed=None, qemu=False, highmem=False):
 
 
 if __name__ == '__main__':
-    root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv)
+    root = build(qemu='--qemu' in sys.argv, highmem='--highmem' in sys.argv,
+                 gicv2='--gicv2' in sys.argv)
     blob = adt.serialize(root)
     open(sys.argv[1], 'wb').write(blob)
     if '--dump' in sys.argv:
