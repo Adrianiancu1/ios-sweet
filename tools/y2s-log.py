@@ -12,7 +12,7 @@ import struct, sys
 
 data = open(sys.argv[1], 'rb').read()
 magic, version, size, total, seq = struct.unpack_from('<8sIIQQ', data, 0)
-if magic != b'Y2SLOG':
+if magic != b'Y2SLOG\x00\x00':
     sys.exit('no Y2SLOG header (log never flushed, or wrong area)')
 ring = data[4096:4096 + size]
 if total <= size:

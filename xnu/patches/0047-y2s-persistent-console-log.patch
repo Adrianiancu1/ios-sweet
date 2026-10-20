@@ -96,7 +96,7 @@
 +		}
 +		if (!error) {
 +			struct y2s_log_header h = {
-+				.magic = { 'S', 'W', 'E', 'E', 'T', 'L', 'O', 'G' },
++				.magic = { 'Y', '2', 'S', 'L', 'O', 'G', '\0', '\0' },
 +				.version = 1, .size = Y2S_LOG_SIZE, .total = total, .seq = ++seq,
 +			};
 +			bzero(bounce, UFS_BLOCK);
