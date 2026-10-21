@@ -12,10 +12,10 @@ index b258a4d..50f7b59 100644
  bsd/dev/y2s_usb.c			standard
 diff --git a/bsd/dev/y2s_sects.c b/bsd/dev/y2s_sects.c
 new file mode 100644
-index 0000000..3371831
+index 0000000..1321c73
 --- /dev/null
 +++ b/bsd/dev/y2s_sects.c
-@@ -0,0 +1,317 @@
+@@ -0,0 +1,371 @@
 +/*
 + * Galaxy S20+ (Exynos 990) touch: Samsung sec_ts (Y79A) at I2C 0x48 on
 + * HSI2C 0x108D0000 (USI v2), polled. Register use follows Samsung's
@@ -45,6 +45,11 @@ index 0000000..3371831
 +
 +#define I2C_PA           0x108d0000u
 +#define GPP5_PA          0x10730000u    /* PERIC1 pinctrl, bank gpp5 at +0 */
++#define PMIC_I2C_PA      0x10590000u    /* HSI2C with the S2DOS05 display PMIC */
++#define PMIC_ADDR        0x60
++#define S2DOS05_EN       0x03           /* bit1 = LDO2 tsp_io, bit2 = LDO3 tsp_avdd */
++#define S2DOS05_LDO2_CFG 0x05           /* 1.5 V + 25 mV * sel -> 1.8 V = 12 */
++#define S2DOS05_LDO3_CFG 0x06           /* 2.7 V + 25 mV * sel -> 3.0 V = 12 */
 +
 +#define HSI2C_CTL        0x00
 +#define HSI2C_FIFO_CTL   0x04
@@ -95,6 +100,7 @@ index 0000000..3371831
 +#define PAD_Y            41             /* (3200 - 2436 * 32 / 25) / 2 */
 +
 +static vm_offset_t i2c, gpio;
++static uint8_t i2c_addr = 0x48;
 +static int sleep_chan;
 +static int raw_logged;
 +static uint32_t active;
@@ -161,7 +167,7 @@ index 0000000..3371831
 +		auto_conf &= ~AUTO_READ;
 +	}
 +	auto_conf |= AUTO_STOP;
-+	wr(HSI2C_ADDR, (rd(HSI2C_ADDR) & ~(0xffu << 24 | 0xfffffu)) | (7u << 24) | ((uint32_t)TS_ADDR << 10));
++	wr(HSI2C_ADDR, (rd(HSI2C_ADDR) & ~(0xffu << 24 | 0xfffffu)) | (7u << 24) | ((uint32_t)i2c_addr << 10));
 +	wr(HSI2C_CTL, ctl);
 +	wr(HSI2C_INT_STAT, rd(HSI2C_INT_STAT));
 +	wr(HSI2C_INT_EN, INT_XFER_DONE);
@@ -194,6 +200,53 @@ index 0000000..3371831
 +	uint32_t is = rd(HSI2C_INT_STAT), ts = rd(HSI2C_TRANS_STAT);
 +	hsi2c_reset();
 +	return (int)(0x80000000u | (is & 0xffffu) << 8 | (ts & 0xff));
++}
++
++static int
++pmic_rd(uint8_t reg, uint8_t *v)
++{
++	int r = hsi2c_msg(false, &reg, 1);
++	return r ? r : hsi2c_msg(true, v, 1);
++}
++
++static int
++pmic_wr(uint8_t reg, uint8_t v)
++{
++	uint8_t b[2] = { reg, v };
++	return hsi2c_msg(false, b, 2);
++}
++
++/* Switch on the touch supplies (DT: s2dos05 ldo2 tsp_io 1.8 V, ldo3 tsp_avdd 3.0 V). */
++static void
++touch_power(void)
++{
++	uint8_t id = 0, en = 0, l2 = 0, l3 = 0;
++	i2c = ml_io_map(PMIC_I2C_PA, 0x1000);
++	i2c_addr = PMIC_ADDR;
++	printf("Y2S SECTS: pmic bus ctl 0x%08x conf 0x%08x usi 0x%08x\n",
++	    rd(HSI2C_CTL), rd(HSI2C_CONF), rd(USI_CON));
++	if (!(rd(HSI2C_CONF) & CONF_AUTO_MODE) || rd(USI_CON) != 0) {
++		hsi2c_reset();
++	}
++	int r0 = pmic_rd(0x00, &id);
++	int r1 = pmic_rd(S2DOS05_EN, &en);
++	(void)pmic_rd(S2DOS05_LDO2_CFG, &l2);
++	(void)pmic_rd(S2DOS05_LDO3_CFG, &l3);
++	printf("Y2S SECTS: s2dos05 rc 0x%x/0x%x id 0x%02x en 0x%02x ldo2 0x%02x ldo3 0x%02x\n",
++	    r0, r1, id, en, l2, l3);
++	if (r1 == 0 && (en & 0x06) != 0x06) {
++		if (!(en & 0x02)) {
++			(void)pmic_wr(S2DOS05_LDO2_CFG, (uint8_t)((l2 & 0x80) | 12));
++		}
++		if (!(en & 0x04)) {
++			(void)pmic_wr(S2DOS05_LDO3_CFG, (uint8_t)((l3 & 0x80) | 12));
++		}
++		int rw = pmic_wr(S2DOS05_EN, (uint8_t)(en | 0x06));
++		(void)pmic_rd(S2DOS05_EN, &en);
++		printf("Y2S SECTS: touch supplies on, rc 0x%x en now 0x%02x\n", rw, en);
++		wait_ms(150);                   /* IC boot after power-on */
++	}
++	i2c_addr = TS_ADDR;
 +}
 +
 +static int
@@ -257,6 +310,7 @@ index 0000000..3371831
 +	printf("Y2S SECTS: starting in %u s\n", delay_s);
 +	wait_ms(delay_s * 1000u);
 +
++	touch_power();
 +	i2c = ml_io_map(I2C_PA, 0x1000);
 +	gpio = ml_io_map(GPP5_PA, 0x1000);
 +	/* gpp5-6/7 = HSI2C SCL/SDA (function 3), no pull (DT tspi2c-bus). */
