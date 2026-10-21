@@ -147,25 +147,23 @@ static void smp_probe(void)
 	 * the DT-style target (core in Aff0) and the MT-style one (Aff1), each
 	 * through hvc (the DT's PSCI conduit) and smc.
 	 */
-	/*
-	 * Linux's exact call (hvc, target = DT reg), then PSCI AFFINITY_INFO
-	 * (0 = ON, 1 = OFF, 2 = ON_PENDING) after 10 ms, 1 s and 3 s.
-	 */
+	/* Probe 5: does real PSCI see these calls? Bogus calls must fail. */
+	{
+		uint32_t r0h = (uint32_t)hvc(PSCI_CPU_ON, 0, entry, 0);
+		uint32_t r0s = (uint32_t)smc(PSCI_CPU_ON, 0, entry, 0);
+		con_hex2("ON cpu0", "hvc=", r0h, "smc=", r0s);
+		uint32_t rbh = (uint32_t)hvc(PSCI_CPU_ON, 0xff, entry, 0);
+		uint32_t rbs = (uint32_t)smc(PSCI_CPU_ON, 0xff, entry, 0);
+		con_hex2("ON bogus", "hvc=", rbh, "smc=", rbs);
+	}
 	for (int i = 1; i <= 3; i++) {
-		char l1[] = "CPUx on", l2[] = "CPUx aff";
-		l1[3] = l2[3] = (char)('0' + i);
-		sec_conduit = 1;
-		__asm__ volatile("dsb sy" ::: "memory");
-		uint32_t a0 = (uint32_t)hvc(0x84000004UL, (uint64_t)i, 0, 0);
-		uint32_t rc = (uint32_t)hvc(PSCI_CPU_ON, (uint64_t)i, entry, (uint64_t)i);
-		wait_ms(10);
-		uint32_t a1 = (uint32_t)hvc(0x84000004UL, (uint64_t)i, 0, 0);
+		char l1[] = "C x00 on";
+		l1[2] = (char)('0' + i);
+		uint64_t t = (uint64_t)i << 8;
+		uint32_t rc = (uint32_t)hvc(PSCI_CPU_ON, t, entry, (uint64_t)i);
 		wait_ms(1000);
-		uint32_t a2 = (uint32_t)hvc(0x84000004UL, (uint64_t)i, 0, 0);
-		wait_ms(2000);
-		uint32_t a3 = (uint32_t)hvc(0x84000004UL, (uint64_t)i, 0, 0);
-		con_hex2(l1, "rc=", rc, "seen=", (uint32_t)sec_seen[i] | (uint32_t)(sec_el[i] << 28));
-		con_hex2(l2, "pre/10ms=", a0 << 16 | a1, "1s/3s=", a2 << 16 | a3);
+		uint32_t a = (uint32_t)hvc(0x84000004UL, t, 0, 0);
+		con_hex2(l1, "rc=", rc, "aff/seen=", a << 16 | (uint32_t)sec_seen[i]);
 	}
 	con_str("SMP", "probe done, xnu in 20s");
 	wait_ms(20000);
