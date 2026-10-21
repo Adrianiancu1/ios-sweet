@@ -12,10 +12,10 @@ index b258a4d..50f7b59 100644
  bsd/dev/y2s_usb.c			standard
 diff --git a/bsd/dev/y2s_sects.c b/bsd/dev/y2s_sects.c
 new file mode 100644
-index 0000000..1321c73
+index 0000000..9aaedf2
 --- /dev/null
 +++ b/bsd/dev/y2s_sects.c
-@@ -0,0 +1,371 @@
+@@ -0,0 +1,382 @@
 +/*
 + * Galaxy S20+ (Exynos 990) touch: Samsung sec_ts (Y79A) at I2C 0x48 on
 + * HSI2C 0x108D0000 (USI v2), polled. Register use follows Samsung's
@@ -47,6 +47,7 @@ index 0000000..1321c73
 +#define GPP5_PA          0x10730000u    /* PERIC1 pinctrl, bank gpp5 at +0 */
 +#define PMIC_I2C_PA      0x10590000u    /* HSI2C with the S2DOS05 display PMIC */
 +#define PMIC_ADDR        0x60
++#define GPP1_PA          0x10430000u    /* PERIC0 pinctrl */
 +#define S2DOS05_EN       0x03           /* bit1 = LDO2 tsp_io, bit2 = LDO3 tsp_avdd */
 +#define S2DOS05_LDO2_CFG 0x05           /* 1.5 V + 25 mV * sel -> 1.8 V = 12 */
 +#define S2DOS05_LDO3_CFG 0x06           /* 2.7 V + 25 mV * sel -> 3.0 V = 12 */
@@ -225,9 +226,19 @@ index 0000000..1321c73
 +	i2c_addr = PMIC_ADDR;
 +	printf("Y2S SECTS: pmic bus ctl 0x%08x conf 0x%08x usi 0x%08x\n",
 +	    rd(HSI2C_CTL), rd(HSI2C_CONF), rd(USI_CON));
-+	if (!(rd(HSI2C_CONF) & CONF_AUTO_MODE) || rd(USI_CON) != 0) {
-+		hsi2c_reset();
++	/* gpp1-0/1 = HSI2C4 SCL/SDA, function 2, no pull (DT hsi2c4-bus); PERIC0 pinctrl, gpp1 at +0x20. */
++	{
++		vm_offset_t p0 = ml_io_map(GPP1_PA, 0x1000);
++		volatile uint32_t *con = (volatile uint32_t *)(p0 + 0x20);
++		volatile uint32_t *pud = (volatile uint32_t *)(p0 + 0x28);
++		printf("Y2S SECTS: gpp1 con 0x%08x pud 0x%08x\n", *con, *pud);
++		*con = (*con & ~0xffu) | 0x22u;
++		*pud = *pud & ~0xffu;
++		__asm__ volatile ("dsb osh" ::: "memory");
 +	}
++	hsi2c_reset();
++	printf("Y2S SECTS: pmic bus after reset ctl 0x%08x conf 0x%08x usi 0x%08x trans 0x%08x fs3 0x%08x\n",
++	    rd(HSI2C_CTL), rd(HSI2C_CONF), rd(USI_CON), rd(HSI2C_TRANS_STAT), rd(HSI2C_TIMING_FS3));
 +	int r0 = pmic_rd(0x00, &id);
 +	int r1 = pmic_rd(S2DOS05_EN, &en);
 +	(void)pmic_rd(S2DOS05_LDO2_CFG, &l2);
