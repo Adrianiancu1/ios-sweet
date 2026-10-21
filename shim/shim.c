@@ -135,6 +135,13 @@ static void smp_probe(void)
 {
 	uintptr_t entry = (uintptr_t)secondary_entry;
 	con_hex("SEC ENTRY", entry);
+	/* Real PSCI 1.0 answers 0x10000; a stub that swallows calls answers 0. */
+	con_hex2("PSCI VER", "hvc=", (uint32_t)hvc(0x84000000UL, 0, 0, 0),
+		 "smc=", (uint32_t)smc(0x84000000UL, 0, 0, 0));
+	con_hex2("CPU_ON F", "hvc=", (uint32_t)hvc(0x8400000aUL, PSCI_CPU_ON, 0, 0),
+		 "smc=", (uint32_t)smc(0x8400000aUL, PSCI_CPU_ON, 0, 0));
+	con_hex2("SMCCC", "hvc=", (uint32_t)hvc(0x80000000UL, 0, 0, 0),
+		 "smc=", (uint32_t)smc(0x80000000UL, 0, 0, 0));
 	/*
 	 * Boot MPIDR is 0x81000000: MT=1, so the core number is in Aff1. Try
 	 * the DT-style target (core in Aff0) and the MT-style one (Aff1), each
