@@ -12,10 +12,10 @@ index b258a4d..50f7b59 100644
  bsd/dev/y2s_usb.c			standard
 diff --git a/bsd/dev/y2s_sects.c b/bsd/dev/y2s_sects.c
 new file mode 100644
-index 0000000..9aaedf2
+index 0000000..617c0e5
 --- /dev/null
 +++ b/bsd/dev/y2s_sects.c
-@@ -0,0 +1,382 @@
+@@ -0,0 +1,401 @@
 +/*
 + * Galaxy S20+ (Exynos 990) touch: Samsung sec_ts (Y79A) at I2C 0x48 on
 + * HSI2C 0x108D0000 (USI v2), polled. Register use follows Samsung's
@@ -226,6 +226,25 @@ index 0000000..9aaedf2
 +	i2c_addr = PMIC_ADDR;
 +	printf("Y2S SECTS: pmic bus ctl 0x%08x conf 0x%08x usi 0x%08x\n",
 +	    rd(HSI2C_CTL), rd(HSI2C_CONF), rd(USI_CON));
++	/*
++	 * HSI2C4 sits on USI02, a UART/SPI/I2C port: select I2C (USI v2 mode 4)
++	 * in SYSREG_PERIC0 (DT usi@1042100c usi_v2_mode = "i2c"). Also log its
++	 * CMU_PERIC0 clocks (cmucal-sfr.c: QCH 0x302c, gate 0x20c4, IPCLK_9
++	 * 0x2044, PCLK_9 0x2074, div 0x180c, user mux 0x640).
++	 */
++	{
++		vm_offset_t sys = ml_io_map(0x10421000u, 0x1000);
++		vm_offset_t cmu = ml_io_map(0x10400000u, 0x8000);
++		volatile uint32_t *mode = (volatile uint32_t *)(sys + 0x00c);
++		uint32_t before = *mode;
++		*mode = 0x4;
++		__asm__ volatile ("dsb osh" ::: "memory");
++		printf("Y2S SECTS: usi02 mode 0x%x -> 0x%x; cmu qch 0x%08x gate 0x%08x ip9 0x%08x p9 0x%08x div 0x%08x mux 0x%08x\n",
++		    before, *mode,
++		    *(volatile uint32_t *)(cmu + 0x302c), *(volatile uint32_t *)(cmu + 0x20c4),
++		    *(volatile uint32_t *)(cmu + 0x2044), *(volatile uint32_t *)(cmu + 0x2074),
++		    *(volatile uint32_t *)(cmu + 0x180c), *(volatile uint32_t *)(cmu + 0x640));
++	}
 +	/* gpp1-0/1 = HSI2C4 SCL/SDA, function 2, no pull (DT hsi2c4-bus); PERIC0 pinctrl, gpp1 at +0x20. */
 +	{
 +		vm_offset_t p0 = ml_io_map(GPP1_PA, 0x1000);
