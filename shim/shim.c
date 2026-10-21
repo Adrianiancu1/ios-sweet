@@ -147,27 +147,25 @@ static void smp_probe(void)
 	 * the DT-style target (core in Aff0) and the MT-style one (Aff1), each
 	 * through hvc (the DT's PSCI conduit) and smc.
 	 */
+	/*
+	 * Linux's exact call (hvc, target = DT reg), then PSCI AFFINITY_INFO
+	 * (0 = ON, 1 = OFF, 2 = ON_PENDING) after 10 ms, 1 s and 3 s.
+	 */
 	for (int i = 1; i <= 3; i++) {
-		const uint64_t targets[2] = { (uint64_t)i, (uint64_t)i << 8 };
-		for (int t = 0; t < 2 && !sec_seen[i]; t++) {
-			for (int c = 1; c >= 0 && !sec_seen[i]; c--) {
-				char l[] = "CPUx t... ...";
-				l[3] = (char)('0' + i);
-				l[6] = t ? '1' : '0';
-				l[7] = t ? '0' : '0';
-				l[8] = t ? '0' : (char)('0' + i);
-				if (t) l[6] = (char)('0' + i);
-				l[10] = c ? 'h' : 's';
-				l[11] = c ? 'v' : 'm';
-				l[12] = 'c';
-				sec_conduit = (uint64_t)c;
-				__asm__ volatile("dsb sy" ::: "memory");
-				uint32_t rc = (uint32_t)(c ? hvc(PSCI_CPU_ON, targets[t], entry, (uint64_t)i)
-				                            : smc(PSCI_CPU_ON, targets[t], entry, (uint64_t)i));
-				wait_ms(300);
-				con_hex2(l, "rc=", rc, "seen=", (uint32_t)sec_seen[i] | (uint32_t)(sec_el[i] << 28));
-			}
-		}
+		char l1[] = "CPUx on", l2[] = "CPUx aff";
+		l1[3] = l2[3] = (char)('0' + i);
+		sec_conduit = 1;
+		__asm__ volatile("dsb sy" ::: "memory");
+		uint32_t a0 = (uint32_t)hvc(0x84000004UL, (uint64_t)i, 0, 0);
+		uint32_t rc = (uint32_t)hvc(PSCI_CPU_ON, (uint64_t)i, entry, (uint64_t)i);
+		wait_ms(10);
+		uint32_t a1 = (uint32_t)hvc(0x84000004UL, (uint64_t)i, 0, 0);
+		wait_ms(1000);
+		uint32_t a2 = (uint32_t)hvc(0x84000004UL, (uint64_t)i, 0, 0);
+		wait_ms(2000);
+		uint32_t a3 = (uint32_t)hvc(0x84000004UL, (uint64_t)i, 0, 0);
+		con_hex2(l1, "rc=", rc, "seen=", (uint32_t)sec_seen[i] | (uint32_t)(sec_el[i] << 28));
+		con_hex2(l2, "pre/10ms=", a0 << 16 | a1, "1s/3s=", a2 << 16 | a3);
 	}
 	con_str("SMP", "probe done, xnu in 20s");
 	wait_ms(20000);
