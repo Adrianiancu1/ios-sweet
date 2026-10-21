@@ -135,21 +135,32 @@ static void smp_probe(void)
 {
 	uintptr_t entry = (uintptr_t)secondary_entry;
 	con_hex("SEC ENTRY", entry);
+	/*
+	 * Boot MPIDR is 0x81000000: MT=1, so the core number is in Aff1. Try
+	 * the DT-style target (core in Aff0) and the MT-style one (Aff1), each
+	 * through hvc (the DT's PSCI conduit) and smc.
+	 */
 	for (int i = 1; i <= 3; i++) {
-		char lh[] = "CPUx hvc", ls[] = "CPUx smc";
-		lh[3] = ls[3] = (char)('0' + i);
-		sec_conduit = 1;
-		__asm__ volatile("dsb sy" ::: "memory");
-		uint32_t rc = (uint32_t)hvc(PSCI_CPU_ON, (uint64_t)i, entry, (uint64_t)i);
-		wait_ms(300);
-		con_hex2(lh, "rc=", rc, "seen=", (uint32_t)sec_seen[i] | (uint32_t)(sec_el[i] << 28));
-		if (sec_seen[i])
-			continue;
-		sec_conduit = 0;
-		__asm__ volatile("dsb sy" ::: "memory");
-		rc = (uint32_t)smc(PSCI_CPU_ON, (uint64_t)i, entry, (uint64_t)i);
-		wait_ms(300);
-		con_hex2(ls, "rc=", rc, "seen=", (uint32_t)sec_seen[i] | (uint32_t)(sec_el[i] << 28));
+		const uint64_t targets[2] = { (uint64_t)i, (uint64_t)i << 8 };
+		for (int t = 0; t < 2 && !sec_seen[i]; t++) {
+			for (int c = 1; c >= 0 && !sec_seen[i]; c--) {
+				char l[] = "CPUx t... ...";
+				l[3] = (char)('0' + i);
+				l[6] = t ? '1' : '0';
+				l[7] = t ? '0' : '0';
+				l[8] = t ? '0' : (char)('0' + i);
+				if (t) l[6] = (char)('0' + i);
+				l[10] = c ? 'h' : 's';
+				l[11] = c ? 'v' : 'm';
+				l[12] = 'c';
+				sec_conduit = (uint64_t)c;
+				__asm__ volatile("dsb sy" ::: "memory");
+				uint32_t rc = (uint32_t)(c ? hvc(PSCI_CPU_ON, targets[t], entry, (uint64_t)i)
+				                            : smc(PSCI_CPU_ON, targets[t], entry, (uint64_t)i));
+				wait_ms(300);
+				con_hex2(l, "rc=", rc, "seen=", (uint32_t)sec_seen[i] | (uint32_t)(sec_el[i] << 28));
+			}
+		}
 	}
 	con_str("SMP", "probe done, xnu in 20s");
 	wait_ms(20000);
