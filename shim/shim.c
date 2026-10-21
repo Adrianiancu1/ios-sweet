@@ -158,7 +158,7 @@ static unsigned uhlog_end(const volatile char *log)
 	return last;
 }
 
-static void smp_probe(void)
+static void __attribute__((unused)) smp_probe(void)
 {
 	uintptr_t entry = (uintptr_t)secondary_entry;
 	con_hex("SEC ENTRY", entry);
@@ -219,7 +219,7 @@ void shim_main(uint64_t dtb)
 	con_hex2("TIMER", "frq=", rsr("cntfrq_el0"), 0, 0);
 	con_skip();
 	stage = "smp probe";
-	smp_probe();
+	/* smp_probe(); SMP blocked by uH, see docs/S20.md */
 	con_skip();
 	stage = "loader";
 	const char *why = loader_boot(dtb);
