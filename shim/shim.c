@@ -147,26 +147,22 @@ static void smp_probe(void)
 	 * the DT-style target (core in Aff0) and the MT-style one (Aff1), each
 	 * through hvc (the DT's PSCI conduit) and smc.
 	 */
-	/* Probe 5: does real PSCI see these calls? Bogus calls must fail. */
+	/* Probe 6: CPU_ON core 1, then show the end of uH's RAM log (uh.h: UH_LOG_START). */
+	uint32_t rc = (uint32_t)hvc(PSCI_CPU_ON, 1, entry, 1);
+	wait_ms(500);
 	{
-		uint32_t r0h = (uint32_t)hvc(PSCI_CPU_ON, 0, entry, 0);
-		uint32_t r0s = (uint32_t)smc(PSCI_CPU_ON, 0, entry, 0);
-		con_hex2("ON cpu0", "hvc=", r0h, "smc=", r0s);
-		uint32_t rbh = (uint32_t)hvc(PSCI_CPU_ON, 0xff, entry, 0);
-		uint32_t rbs = (uint32_t)smc(PSCI_CPU_ON, 0xff, entry, 0);
-		con_hex2("ON bogus", "hvc=", rbh, "smc=", rbs);
+		const volatile char *log = (const volatile char *)0xC1500000UL;
+		const unsigned size = 0x40000;
+		unsigned last = 0, nz = 0;
+		for (unsigned i = 0; i < size; i++)
+			if (log[i]) { last = i + 1; nz++; }
+		con_hex2("UHLOG", "nz=", nz, "end=", last);
+		con_hex2("CPU1 on", "rc=", rc, "seen=", (uint32_t)sec_seen[1]);
+		unsigned from = last > 2200 ? last - 2200 : 0;
+		con_text(log + from, last - from, 44);
 	}
-	for (int i = 1; i <= 3; i++) {
-		char l1[] = "C x00 on";
-		l1[2] = (char)('0' + i);
-		uint64_t t = (uint64_t)i << 8;
-		uint32_t rc = (uint32_t)hvc(PSCI_CPU_ON, t, entry, (uint64_t)i);
-		wait_ms(1000);
-		uint32_t a = (uint32_t)hvc(0x84000004UL, t, 0, 0);
-		con_hex2(l1, "rc=", rc, "aff/seen=", a << 16 | (uint32_t)sec_seen[i]);
-	}
-	con_str("SMP", "probe done, xnu in 20s");
-	wait_ms(20000);
+	con_str("SMP", "probe done, xnu in 60s");
+	wait_ms(60000);
 }
 
 void shim_main(uint64_t dtb)

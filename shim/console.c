@@ -95,3 +95,22 @@ void con_hex2(const char *label, const char *a, uint32_t va, const char *b, uint
 	}
 	row++;
 }
+
+/* Raw text, wrapped at the screen width; non-printables shown as '.', '\n' breaks. */
+void con_text(const volatile char *s, unsigned n, int max_rows)
+{
+	const int cols = (FB_W - 2 * MARGIN) / CH_W;
+	char line[64];
+	int c = 0, rows = 0;
+	for (unsigned i = 0; i <= n && rows < max_rows; i++) {
+		char ch = i < n ? s[i] : '\n';
+		if (ch == '\n' || c == cols) {
+			line[c] = 0;
+			if (c) { put_str(0, line, WHITE); row++; rows++; }
+			c = 0;
+			if (ch == '\n')
+				continue;
+		}
+		line[c++] = (ch >= 32 && ch < 127) ? ch : '.';
+	}
+}
