@@ -131,6 +131,33 @@ static void wait_ms(unsigned ms)
 		;
 }
 
+/* Samsung RKP (include/linux/rkp.h struct rkp_init, non-FASTUH IDs). */
+static struct {
+	uint32_t magic;
+	uint64_t vmalloc_start, vmalloc_end, init_mm_pgd, id_map_pgd, zero_pg_addr;
+	uint64_t rkp_pgt_bitmap, rkp_dbl_bitmap;
+	uint32_t rkp_bitmap_size, no_fimc_verify;
+	uint64_t fimc_phys_addr, _text, _etext, extra_memory_addr;
+	uint32_t extra_memory_size;
+	uint64_t physmap_addr, _srodata, _erodata;
+	uint32_t large_memory;
+	uint64_t tramp_pgd, tramp_valias;
+} rkp_init_data;
+static uint8_t rkp_pgd[4096] __attribute__((aligned(4096)));
+static uint8_t rkp_idmap[4096] __attribute__((aligned(4096)));
+static uint8_t rkp_zero[4096] __attribute__((aligned(4096)));
+static uint8_t rkp_text[4096] __attribute__((aligned(4096)));
+static uint8_t rkp_ro[4096] __attribute__((aligned(4096)));
+
+static unsigned uhlog_end(const volatile char *log)
+{
+	unsigned last = 0;
+	for (unsigned i = 0; i < 0x40000; i++)
+		if (log[i])
+			last = i + 1;
+	return last;
+}
+
 static void smp_probe(void)
 {
 	uintptr_t entry = (uintptr_t)secondary_entry;
@@ -147,22 +174,39 @@ static void smp_probe(void)
 	 * the DT-style target (core in Aff0) and the MT-style one (Aff1), each
 	 * through hvc (the DT's PSCI conduit) and smc.
 	 */
-	/* Probe 6: CPU_ON core 1, then show the end of uH's RAM log (uh.h: UH_LOG_START). */
+	/* Probe 7: RKP_START (as Samsung's start_kernel does) before CPU_ON. */
+	const volatile char *log = (const volatile char *)0xC1500000UL;
+	unsigned end0 = uhlog_end(log);
+	static uint64_t ro_bm, dbl_bm;
+	uint32_t r1 = (uint32_t)hvc(0x83000213UL, (uint64_t)&ro_bm, 0, 0);
+	uint32_t r2 = (uint32_t)hvc(0x83000214UL, (uint64_t)&dbl_bm, 0, 0);
+	rkp_init_data.magic = 0x5afe0001;
+	rkp_init_data.vmalloc_start = 0xffffff8008000000UL;
+	rkp_init_data.vmalloc_end = 0xffffffbebfff0000UL;
+	rkp_init_data.init_mm_pgd = (uint64_t)rkp_pgd;
+	rkp_init_data.id_map_pgd = (uint64_t)rkp_idmap;
+	rkp_init_data.zero_pg_addr = (uint64_t)rkp_zero;
+	rkp_init_data.no_fimc_verify = 1;
+	rkp_init_data._text = (uint64_t)rkp_text;
+	rkp_init_data._etext = (uint64_t)rkp_text + 4096;
+	rkp_init_data._srodata = (uint64_t)rkp_ro;
+	rkp_init_data._erodata = (uint64_t)rkp_ro + 4096;
+	__asm__ volatile("dsb sy" ::: "memory");
+	uint32_t r3 = (uint32_t)hvc(0x83000201UL, (uint64_t)&rkp_init_data, 0, 0);
+	con_hex2("RKP bm", "ro=", r1, "dbl=", r2);
+	con_hex2("RKP ptr", "ro=", (uint32_t)ro_bm, "dbl=", (uint32_t)dbl_bm);
+	con_hex2("RKP STRT", "rc=", r3, "log+=", uhlog_end(log) - end0);
+	uint32_t a0 = (uint32_t)hvc(0x84000004UL, 1, 0, 0);
 	uint32_t rc = (uint32_t)hvc(PSCI_CPU_ON, 1, entry, 1);
-	wait_ms(500);
-	{
-		const volatile char *log = (const volatile char *)0xC1500000UL;
-		const unsigned size = 0x40000;
-		unsigned last = 0, nz = 0;
-		for (unsigned i = 0; i < size; i++)
-			if (log[i]) { last = i + 1; nz++; }
-		con_hex2("UHLOG", "nz=", nz, "end=", last);
-		con_hex2("CPU1 on", "rc=", rc, "seen=", (uint32_t)sec_seen[1]);
-		unsigned from = last > 2200 ? last - 2200 : 0;
-		con_text(log + from, last - from, 44);
-	}
-	con_str("SMP", "probe done, xnu in 60s");
-	wait_ms(60000);
+	wait_ms(1000);
+	uint32_t a1 = (uint32_t)hvc(0x84000004UL, 1, 0, 0);
+	con_hex2("CPU1 on", "rc=", rc, "seen=", (uint32_t)sec_seen[1]);
+	con_hex2("CPU1 aff", "pre=", a0, "1s=", a1);
+	unsigned end1 = uhlog_end(log);
+	con_hex2("UHLOG", "before=", end0, "after=", end1);
+	unsigned from = end1 - end0 > 1600 ? end1 - 1600 : end0;
+	con_text(log + from, end1 - from, 34);
+	reset(60);
 }
 
 void shim_main(uint64_t dtb)
