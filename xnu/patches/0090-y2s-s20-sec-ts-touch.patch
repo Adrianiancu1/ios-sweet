@@ -12,7 +12,7 @@ index b258a4d..50f7b59 100644
  bsd/dev/y2s_usb.c			standard
 diff --git a/bsd/dev/y2s_sects.c b/bsd/dev/y2s_sects.c
 new file mode 100644
-index 0000000..617c0e5
+index 0000000..bb08d98
 --- /dev/null
 +++ b/bsd/dev/y2s_sects.c
 @@ -0,0 +1,401 @@
@@ -228,14 +228,14 @@ index 0000000..617c0e5
 +	    rd(HSI2C_CTL), rd(HSI2C_CONF), rd(USI_CON));
 +	/*
 +	 * HSI2C4 sits on USI02, a UART/SPI/I2C port: select I2C (USI v2 mode 4)
-+	 * in SYSREG_PERIC0 (DT usi@1042100c usi_v2_mode = "i2c"). Also log its
++	 * in SYSREG_PERIC0 (DT usi@10421014 usi_v2_mode = "i2c"). Also log its
 +	 * CMU_PERIC0 clocks (cmucal-sfr.c: QCH 0x302c, gate 0x20c4, IPCLK_9
 +	 * 0x2044, PCLK_9 0x2074, div 0x180c, user mux 0x640).
 +	 */
 +	{
 +		vm_offset_t sys = ml_io_map(0x10421000u, 0x1000);
 +		vm_offset_t cmu = ml_io_map(0x10400000u, 0x8000);
-+		volatile uint32_t *mode = (volatile uint32_t *)(sys + 0x00c);
++		volatile uint32_t *mode = (volatile uint32_t *)(sys + 0x014);  /* USI02_USI (0x1004 USI00, 0x100c USI01) */
 +		uint32_t before = *mode;
 +		*mode = 0x4;
 +		__asm__ volatile ("dsb osh" ::: "memory");
