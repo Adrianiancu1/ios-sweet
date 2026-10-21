@@ -83,12 +83,76 @@ void exc_handler(uint64_t slot, uint64_t *regs)
 	reset(60);
 }
 
-/* No secondaries are started yet; keep the symbol start.S references. */
+static uint64_t hvc(uint64_t fn, uint64_t a1, uint64_t a2, uint64_t a3)
+{
+	register uint64_t x0 __asm__("x0") = fn;
+	register uint64_t x1 __asm__("x1") = a1;
+	register uint64_t x2 __asm__("x2") = a2;
+	register uint64_t x3 __asm__("x3") = a3;
+	__asm__ volatile("hvc #0"
+			 : "+r"(x0), "+r"(x1), "+r"(x2), "+r"(x3)
+			 :
+			 : "x4", "x5", "x6", "x7", "x8", "x9", "x10", "x11",
+			   "x12", "x13", "x14", "x15", "x16", "x17", "memory");
+	return x0;
+}
+
+/*
+ * SMP probe (boot-arg-free: built in, runs before the loader). A started
+ * core records its MPIDR and exception level, then switches itself off
+ * again through the same conduit, so xnu can CPU_ON it later.
+ */
+#define PSCI_CPU_ON	0xc4000003UL
+#define PSCI_CPU_OFF	0x84000002UL
+extern char secondary_entry[];
+static volatile uint64_t sec_seen[8], sec_el[8], sec_conduit;
+
 void secondary_main(uint64_t idx)
 {
-	(void)idx;
+	idx &= 7;
+	sec_el[idx] = rsr("CurrentEL") >> 2;
+	sec_seen[idx] = rsr("mpidr_el1") | (1ULL << 63);
+	__asm__ volatile("dsb sy" ::: "memory");
+	if (sec_conduit)
+		hvc(PSCI_CPU_OFF, 0, 0, 0);
+	else
+		smc(PSCI_CPU_OFF, 0, 0, 0);
 	for (;;)
 		__asm__ volatile("wfe");
+}
+
+static void wait_ms(unsigned ms)
+{
+	uint64_t f = rsr("cntfrq_el0");
+	if (f == 0)
+		f = 26000000;
+	uint64_t end = now() + f / 1000 * ms;
+	while (now() < end)
+		;
+}
+
+static void smp_probe(void)
+{
+	uintptr_t entry = (uintptr_t)secondary_entry;
+	con_hex("SEC ENTRY", entry);
+	for (int i = 1; i <= 3; i++) {
+		char lh[] = "CPUx hvc", ls[] = "CPUx smc";
+		lh[3] = ls[3] = (char)('0' + i);
+		sec_conduit = 1;
+		__asm__ volatile("dsb sy" ::: "memory");
+		uint32_t rc = (uint32_t)hvc(PSCI_CPU_ON, (uint64_t)i, entry, (uint64_t)i);
+		wait_ms(300);
+		con_hex2(lh, "rc=", rc, "seen=", (uint32_t)sec_seen[i] | (uint32_t)(sec_el[i] << 28));
+		if (sec_seen[i])
+			continue;
+		sec_conduit = 0;
+		__asm__ volatile("dsb sy" ::: "memory");
+		rc = (uint32_t)smc(PSCI_CPU_ON, (uint64_t)i, entry, (uint64_t)i);
+		wait_ms(300);
+		con_hex2(ls, "rc=", rc, "seen=", (uint32_t)sec_seen[i] | (uint32_t)(sec_el[i] << 28));
+	}
+	con_str("SMP", "probe done, xnu in 20s");
+	wait_ms(20000);
 }
 
 void shim_main(uint64_t dtb)
@@ -100,6 +164,10 @@ void shim_main(uint64_t dtb)
 	con_hex2("DTB", "at=", dtb, "magic=", dtb ? __builtin_bswap32(*(volatile uint32_t *)dtb) : 0);
 	con_hex2("TIMER", "frq=", rsr("cntfrq_el0"), 0, 0);
 	con_skip();
+	stage = "smp probe";
+	smp_probe();
+	con_skip();
+	stage = "loader";
 	const char *why = loader_boot(dtb);
 	/* Only reached on error. */
 	con_str("LOADER", why);
