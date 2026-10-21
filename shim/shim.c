@@ -178,7 +178,9 @@ static void smp_probe(void)
 	const volatile char *log = (const volatile char *)0xC1500000UL;
 	unsigned end0 = uhlog_end(log);
 	static uint64_t ro_bm, dbl_bm;
+	con_hex("RKP 1 ro", (uint64_t)&ro_bm);
 	uint32_t r1 = (uint32_t)hvc(0x83000213UL, (uint64_t)&ro_bm, 0, 0);
+	con_hex2("RKP 1 ok", "rc=", r1, "ptr=", (uint32_t)ro_bm);
 	uint32_t r2 = (uint32_t)hvc(0x83000214UL, (uint64_t)&dbl_bm, 0, 0);
 	rkp_init_data.magic = 0x5afe0001;
 	rkp_init_data.vmalloc_start = 0xffffff8008000000UL;
@@ -192,6 +194,8 @@ static void smp_probe(void)
 	rkp_init_data._srodata = (uint64_t)rkp_ro;
 	rkp_init_data._erodata = (uint64_t)rkp_ro + 4096;
 	__asm__ volatile("dsb sy" ::: "memory");
+	con_hex2("RKP 2 ok", "rc=", r2, "ptr=", (uint32_t)dbl_bm);
+	con_hex("RKP 3 strt", (uint64_t)&rkp_init_data);
 	uint32_t r3 = (uint32_t)hvc(0x83000201UL, (uint64_t)&rkp_init_data, 0, 0);
 	con_hex2("RKP bm", "ro=", r1, "dbl=", r2);
 	con_hex2("RKP ptr", "ro=", (uint32_t)ro_bm, "dbl=", (uint32_t)dbl_bm);
