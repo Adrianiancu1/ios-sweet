@@ -12,10 +12,10 @@ index 50f7b59..262920d 100644
  bsd/dev/y2s_usb.c			standard
 diff --git a/bsd/dev/y2s_acpm.c b/bsd/dev/y2s_acpm.c
 new file mode 100644
-index 0000000..d3b246a
+index 0000000..5a56f35
 --- /dev/null
 +++ b/bsd/dev/y2s_acpm.c
-@@ -0,0 +1,180 @@
+@@ -0,0 +1,202 @@
 +/*
 + * Galaxy S20+ (Exynos 990): raise the boot cluster's clock through ACPM,
 + * the power-management microcontroller that owns CPU voltage and PLLs.
@@ -82,7 +82,10 @@ index 0000000..d3b246a
 +	uint64_t t0 = mach_absolute_time(), lim;
 +	nanoseconds_to_absolutetime(50 * NSEC_PER_MSEC, &lim);
 +
-+	while (next == r32(sram + tx_rear)) {           /* queue full */
++	printf("Y2S ACPM: xfer tx front %u rear %u, rx front %u rear %u, intsr1 0x%x\n",
++	    front, r32(sram + tx_rear), r32(sram + rx_front), r32(sram + rx_rear), r32(mbox + INTSR1));
++	/* 1-slot queue: the ring "full" test can never pass; just use the slot. */
++	while (q_len > 1 && next == r32(sram + tx_rear)) {
 +		if (mach_absolute_time() - t0 > lim) {
 +			return -1;
 +		}
@@ -100,7 +103,18 @@ index 0000000..d3b246a
 +	t0 = mach_absolute_time();
 +	for (;;) {
 +		uint32_t rr = r32(sram + rx_rear), rf = r32(sram + rx_front);
-+		if (rr != rf) {
++		bool got = (rr != rf);
++		if (!got && q_len == 1 && (r32(mbox + INTSR1) & (1u << ch_id))) {
++			vm_offset_t e = sram + rx_base;
++			printf("Y2S ACPM: intsr1 set, slot 0x%x 0x%x 0x%x 0x%x front %u rear %u\n",
++			    r32(e), r32(e + 4), r32(e + 8), r32(e + 12), rf, rr);
++			for (unsigned i = 0; i < 4; i++) {
++				cmd[i] = r32(e + 4 * i);
++			}
++			w32(mbox + INTCR1, 1u << ch_id);
++			return 0;
++		}
++		if (got) {
 +			vm_offset_t e = sram + rx_base + q_size * rr;
 +			uint32_t r0 = r32(e);
 +			if (((r0 >> 16) & 0x3f) == seq) {
@@ -116,6 +130,9 @@ index 0000000..d3b246a
 +			continue;
 +		}
 +		if (mach_absolute_time() - t0 > lim) {
++			printf("Y2S ACPM: timeout: tx front %u rear %u, rx front %u rear %u, intsr1 0x%x, slot 0x%x 0x%x\n",
++			    r32(sram + tx_front), r32(sram + tx_rear), r32(sram + rx_front), r32(sram + rx_rear),
++			    r32(mbox + INTSR1), r32(sram + rx_base), r32(sram + rx_base + 4));
 +			return -2;
 +		}
 +		delay(10);
@@ -175,6 +192,11 @@ index 0000000..d3b246a
 +	printf("Y2S ACPM: ch %u id %u len %u size %u tx %x/%x/%x rx %x/%x/%x poll %u\n",
 +	    DVFS_CH, ch_id, q_len, q_size, tx_rear, tx_front, tx_base, rx_rear, rx_front, rx_base,
 +	    r32(c + 68));
++	for (unsigned k = 0; k < ap_max && k < 12; k++) {
++		vm_offset_t ck = sram + chans + 72 * k;
++		printf("Y2S ACPM: ch%u id %u type %u len %u size %u poll %u\n", k, r32(ck), r32(ck + 12),
++		    r32(ck + 16 + 36), r32(ck + 16 + 40), r32(ck + 68));
++	}
 +	if (q_len == 0 || q_len > 64 || q_size < 16 || q_size > 64 || ch_id > 15 ||
 +	    tx_base >= ACPM_SRAM_SIZE || rx_base >= ACPM_SRAM_SIZE) {
 +		printf("Y2S ACPM: channel layout looks wrong, not sending\n");
