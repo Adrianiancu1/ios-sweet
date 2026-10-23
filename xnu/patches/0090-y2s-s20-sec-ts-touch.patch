@@ -12,10 +12,10 @@ index b258a4d..50f7b59 100644
  bsd/dev/y2s_usb.c			standard
 diff --git a/bsd/dev/y2s_sects.c b/bsd/dev/y2s_sects.c
 new file mode 100644
-index 0000000..f06228a
+index 0000000..7f33ad2
 --- /dev/null
 +++ b/bsd/dev/y2s_sects.c
-@@ -0,0 +1,509 @@
+@@ -0,0 +1,519 @@
 +/*
 + * Galaxy S20+ (Exynos 990) touch: Samsung sec_ts (Y79A) at I2C 0x48 on
 + * HSI2C 0x108D0000 (USI v2), polled. Register use follows Samsung's
@@ -287,10 +287,20 @@ index 0000000..f06228a
 +	i2c = pmic_i2c;
 +	i2c_addr = PMIC_ADDR;
 +	if (pmic_rd(S2DOS05_EN, &en) == 0) {
-+		(void)pmic_wr(S2DOS05_EN, (uint8_t)(en & ~mask));
++		/*
++		 * The panel runs from LDO1 (ddi-vdd3), LDO4 (ddi-vci) and BUCK1
++		 * (ddr-vddr) (DT dsim regulators). EN reads 0x0e with the LDO1 and
++		 * BUCK1 bits clear while the panel is lit, so writing EN back
++		 * without them switched the panel off. Keep bits 0/3/4 set.
++		 */
++		const uint8_t panel = 0x19;
++		uint8_t en2 = 0;
++		(void)pmic_wr(S2DOS05_EN, (uint8_t)((en | panel) & ~mask));
 +		delay(off_us);                  /* microseconds */
-+		int rw = pmic_wr(S2DOS05_EN, (uint8_t)(en | mask));
-+		printf("Y2S SECTS: cycled supply mask 0x%02x for %u us (en 0x%02x), rc 0x%x\n", mask, off_us, en, rw);
++		int rw = pmic_wr(S2DOS05_EN, (uint8_t)(en | panel | mask));
++		(void)pmic_rd(S2DOS05_EN, &en2);
++		printf("Y2S SECTS: cycled supply mask 0x%02x for %u us (en 0x%02x -> 0x%02x), rc 0x%x\n",
++		    mask, off_us, en, en2, rw);
 +	}
 +	i2c = touch_i2c;
 +	i2c_addr = TS_ADDR;
@@ -453,10 +463,10 @@ index 0000000..f06228a
 +	 * ride through one the IC already resets on.
 +	 */
 +	static const struct { uint8_t mask; unsigned us; } tries[] = {
-+		{ 0x02, 200 }, { 0x02, 1000 }, { 0x02, 3000 }, { 0x02, 10000 }, { 0x02, 50000 },
++		{ 0x02, 30000 },        /* LDO2 tsp_io off 30 ms, as sec_ts_power() */
 +	};
-+	/* Even 200 us blanks the panel: power dips only with boot-arg y2stouchcycle=1. */
-+	int allow_cycle = 0;
++	/* Power cycle on by default; y2stouchcycle=0 disables it. */
++	int allow_cycle = 1;
 +	(void)PE_parse_boot_argn("y2stouchcycle", &allow_cycle, sizeof(allow_cycle));
 +	for (unsigned t = 0; allow_cycle && r1 != 0 && t < sizeof(tries) / sizeof(tries[0]); t++) {
 +		printf("Y2S SECTS: id rc 0x%x, try %u\n", r1, t);
