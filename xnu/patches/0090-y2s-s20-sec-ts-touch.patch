@@ -12,10 +12,10 @@ index b258a4d..50f7b59 100644
  bsd/dev/y2s_usb.c			standard
 diff --git a/bsd/dev/y2s_sects.c b/bsd/dev/y2s_sects.c
 new file mode 100644
-index 0000000..89427a0
+index 0000000..d59c0e0
 --- /dev/null
 +++ b/bsd/dev/y2s_sects.c
-@@ -0,0 +1,430 @@
+@@ -0,0 +1,452 @@
 +/*
 + * Galaxy S20+ (Exynos 990) touch: Samsung sec_ts (Y79A) at I2C 0x48 on
 + * HSI2C 0x108D0000 (USI v2), polled. Register use follows Samsung's
@@ -102,6 +102,8 @@ index 0000000..89427a0
 +
 +static vm_offset_t i2c, gpio;
 +static uint8_t i2c_addr = 0x48;
++static vm_offset_t pmic_i2c;
++static bool pmic_ok;
 +static int sleep_chan;
 +static int raw_logged;
 +static uint32_t active;
@@ -264,25 +266,35 @@ index 0000000..89427a0
 +	(void)pmic_rd(S2DOS05_LDO3_CFG, &l3);
 +	printf("Y2S SECTS: s2dos05 rc 0x%x/0x%x id 0x%02x en 0x%02x ldo2 0x%02x ldo3 0x%02x\n",
 +	    r0, r1, id, en, l2, l3);
-+	if (r1 == 0) {
-+		/*
-+		 * S-Boot leaves vsel 0 (LDO2 1.5 V, LDO3 2.7 V); Linux sets the DT
-+		 * voltages (1.8 V / 3.0 V) at regulator registration. Set them and
-+		 * power-cycle the IC (sec_ts_power off 30 ms, on, wait for boot).
-+		 */
-+		(void)pmic_wr(S2DOS05_EN, (uint8_t)(en & ~0x06));
-+		wait_ms(50);
-+		(void)pmic_wr(S2DOS05_LDO2_CFG, (uint8_t)((l2 & 0x80) | 12));
-+		(void)pmic_wr(S2DOS05_LDO3_CFG, (uint8_t)((l3 & 0x80) | 12));
-+		int rw = pmic_wr(S2DOS05_EN, (uint8_t)(en | 0x06));
-+		(void)pmic_rd(S2DOS05_EN, &en);
-+		(void)pmic_rd(S2DOS05_LDO2_CFG, &l2);
-+		(void)pmic_rd(S2DOS05_LDO3_CFG, &l3);
-+		printf("Y2S SECTS: touch supplies cycled, rc 0x%x en 0x%02x ldo2 0x%02x ldo3 0x%02x\n",
-+		    rw, en, l2, l3);
-+		wait_ms(300);                   /* IC boot after power-on */
-+	}
++	pmic_ok = (r1 == 0);
++	pmic_i2c = i2c;
 +	i2c_addr = TS_ADDR;
++}
++
++/*
++ * Reset a stuck touch IC by switching S2DOS05 supplies in `mask` off for
++ * 50 ms (bit2 = LDO3 tsp_avdd, bit1 = LDO2 tsp_io). Cycling both at once
++ * also blanked the panel, so one rail at a time, LDO3 first.
++ */
++static void
++touch_cycle(uint8_t mask)
++{
++	vm_offset_t touch_i2c = i2c;
++	uint8_t en = 0;
++	if (!pmic_ok) {
++		return;
++	}
++	i2c = pmic_i2c;
++	i2c_addr = PMIC_ADDR;
++	if (pmic_rd(S2DOS05_EN, &en) == 0) {
++		(void)pmic_wr(S2DOS05_EN, (uint8_t)(en & ~mask));
++		wait_ms(50);
++		int rw = pmic_wr(S2DOS05_EN, (uint8_t)(en | mask));
++		printf("Y2S SECTS: cycled supply mask 0x%02x (en 0x%02x), rc 0x%x\n", mask, en, rw);
++	}
++	i2c = touch_i2c;
++	i2c_addr = TS_ADDR;
++	wait_ms(300);                           /* IC boot after power-on */
 +}
 +
 +static int
@@ -384,6 +396,16 @@ index 0000000..89427a0
 +
 +	uint8_t id[5] = {0}, boot = 0;
 +	int r1 = ts_read(TS_DEVICE_ID, id, 5);
++	if (r1 != 0) {
++		printf("Y2S SECTS: id rc 0x%x, cycling tsp_avdd\n", r1);
++		touch_cycle(0x04);
++		r1 = ts_read(TS_DEVICE_ID, id, 5);
++	}
++	if (r1 != 0) {
++		printf("Y2S SECTS: id rc 0x%x, cycling tsp_io\n", r1);
++		touch_cycle(0x02);
++		r1 = ts_read(TS_DEVICE_ID, id, 5);
++	}
 +	int r2 = ts_read(TS_BOOT_STATUS, &boot, 1);
 +	printf("Y2S SECTS: id rc 0x%x %02x %02x %02x %02x %02x, boot rc 0x%x status 0x%02x\n",
 +	    r1, id[0], id[1], id[2], id[3], id[4], r2, boot);
