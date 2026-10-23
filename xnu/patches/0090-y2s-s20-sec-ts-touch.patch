@@ -12,10 +12,10 @@ index b258a4d..50f7b59 100644
  bsd/dev/y2s_usb.c			standard
 diff --git a/bsd/dev/y2s_sects.c b/bsd/dev/y2s_sects.c
 new file mode 100644
-index 0000000..67589e1
+index 0000000..df5b283
 --- /dev/null
 +++ b/bsd/dev/y2s_sects.c
-@@ -0,0 +1,457 @@
+@@ -0,0 +1,456 @@
 +/*
 + * Galaxy S20+ (Exynos 990) touch: Samsung sec_ts (Y79A) at I2C 0x48 on
 + * HSI2C 0x108D0000 (USI v2), polled. Register use follows Samsung's
@@ -277,7 +277,7 @@ index 0000000..67589e1
 + * also blanked the panel, so one rail at a time, LDO3 first.
 + */
 +static void
-+touch_cycle(uint8_t mask, unsigned off_ms)
++touch_cycle(uint8_t mask, unsigned off_us)
 +{
 +	vm_offset_t touch_i2c = i2c;
 +	uint8_t en = 0;
@@ -288,13 +288,9 @@ index 0000000..67589e1
 +	i2c_addr = PMIC_ADDR;
 +	if (pmic_rd(S2DOS05_EN, &en) == 0) {
 +		(void)pmic_wr(S2DOS05_EN, (uint8_t)(en & ~mask));
-+		if (off_ms >= 10) {
-+			wait_ms(off_ms);
-+		} else {
-+			delay(off_ms * 1000);
-+		}
++		delay(off_us);                  /* microseconds */
 +		int rw = pmic_wr(S2DOS05_EN, (uint8_t)(en | mask));
-+		printf("Y2S SECTS: cycled supply mask 0x%02x for %u ms (en 0x%02x), rc 0x%x\n", mask, off_ms, en, rw);
++		printf("Y2S SECTS: cycled supply mask 0x%02x for %u us (en 0x%02x), rc 0x%x\n", mask, off_us, en, rw);
 +	}
 +	i2c = touch_i2c;
 +	i2c_addr = TS_ADDR;
@@ -401,14 +397,17 @@ index 0000000..67589e1
 +	uint8_t id[5] = {0}, boot = 0;
 +	int r1 = ts_read(TS_DEVICE_ID, id, 5);
 +	/* Stuck IC (holds SCL/SDA low after S-Boot): least disruptive reset first. */
-+	static const struct { uint8_t mask; unsigned ms; } tries[] = {
-+		{ 0x02, 50 },   /* LDO2 tsp_io */
-+		{ 0x04, 2 },    /* LDO3 tsp_avdd, short: the panel may ride through */
-+		{ 0x04, 50 },   /* LDO3 long: known to blank the panel */
++	/*
++	 * LDO2 (tsp_io) also feeds the panel: a 50 ms cycle frees the IC but
++	 * blanks the display. Shortest dip first; the panel's decoupling may
++	 * ride through one the IC already resets on.
++	 */
++	static const struct { uint8_t mask; unsigned us; } tries[] = {
++		{ 0x02, 200 }, { 0x02, 1000 }, { 0x02, 3000 }, { 0x02, 10000 }, { 0x02, 50000 },
 +	};
 +	for (unsigned t = 0; r1 != 0 && t < sizeof(tries) / sizeof(tries[0]); t++) {
 +		printf("Y2S SECTS: id rc 0x%x, try %u\n", r1, t);
-+		touch_cycle(tries[t].mask, tries[t].ms);
++		touch_cycle(tries[t].mask, tries[t].us);
 +		r1 = ts_read(TS_DEVICE_ID, id, 5);
 +	}
 +	int r2 = ts_read(TS_BOOT_STATUS, &boot, 1);
