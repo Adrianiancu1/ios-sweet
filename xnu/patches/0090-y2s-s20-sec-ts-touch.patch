@@ -12,10 +12,10 @@ index b258a4d..50f7b59 100644
  bsd/dev/y2s_usb.c			standard
 diff --git a/bsd/dev/y2s_sects.c b/bsd/dev/y2s_sects.c
 new file mode 100644
-index 0000000..bb08d98
+index 0000000..d36819a
 --- /dev/null
 +++ b/bsd/dev/y2s_sects.c
-@@ -0,0 +1,401 @@
+@@ -0,0 +1,417 @@
 +/*
 + * Galaxy S20+ (Exynos 990) touch: Samsung sec_ts (Y79A) at I2C 0x48 on
 + * HSI2C 0x108D0000 (USI v2), polled. Register use follows Samsung's
@@ -348,6 +348,22 @@ index 0000000..bb08d98
 +	volatile uint32_t *pud = (volatile uint32_t *)(gpio + 8);
 +	printf("Y2S SECTS: gpp5 con 0x%08x pud 0x%08x, hsi2c ctl 0x%08x conf 0x%08x usi 0x%08x\n",
 +	    *con, *pud, rd(HSI2C_CTL), rd(HSI2C_CONF), rd(USI_CON));
++	/*
++	 * Touch HSI2C clocks in CMU_PERIC1 (cmucal-sfr.c): QCH USI07_I2C 0x3038,
++	 * gate RSTNSYNC USI_I2C 0x2104, div 0x182c, user mux 0x6c0. Force the
++	 * gate (MANUAL bit20 + CG_VAL bit21) and Q-channel (CLOCK_REQ, no auto) on.
++	 */
++	{
++		vm_offset_t cmu = ml_io_map(0x10700000u, 0x8000);
++		volatile uint32_t *qch = (volatile uint32_t *)(cmu + 0x3038);
++		volatile uint32_t *gate = (volatile uint32_t *)(cmu + 0x2104);
++		printf("Y2S SECTS: peric1 qch 0x%08x gate 0x%08x div 0x%08x mux 0x%08x\n",
++		    *qch, *gate, *(volatile uint32_t *)(cmu + 0x182c), *(volatile uint32_t *)(cmu + 0x6c0));
++		*gate = *gate | (3u << 20);
++		*qch = (*qch & ~1u) | 2u;
++		__asm__ volatile ("dsb osh" ::: "memory");
++		printf("Y2S SECTS: peric1 now qch 0x%08x gate 0x%08x\n", *qch, *gate);
++	}
 +	*con = (*con & 0x00ffffffu) | 0x33000000u;
 +	*pud = *pud & 0x00ffffffu;
 +	__asm__ volatile ("dsb osh" ::: "memory");
