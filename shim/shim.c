@@ -241,6 +241,21 @@ void shim_main(uint64_t dtb)
 		__asm__ volatile("dsb sy" ::: "memory");
 		con_hex2("TSP CON", "con=", c0, "pud=", p0);
 		con_hex2("TSP LINES", "asis/nopull=", d0 << 4 | d1, "pullup=", d2);
+
+		/* Boot CPU clock: PMU cycle counter over 100 ms of the 26 MHz timer. */
+		uint64_t pmcr;
+		__asm__ volatile("mrs %0, pmcr_el0" : "=r"(pmcr));
+		__asm__ volatile("msr pmcr_el0, %0" :: "r"(pmcr | 1));             /* E */
+		__asm__ volatile("msr pmcntenset_el0, %0" :: "r"(1UL << 31));       /* C */
+		__asm__ volatile("isb");
+		uint64_t k0, k1, t0, t1;
+		__asm__ volatile("mrs %0, cntpct_el0" : "=r"(t0));
+		__asm__ volatile("mrs %0, pmccntr_el0" : "=r"(k0));
+		do {
+			__asm__ volatile("mrs %0, cntpct_el0" : "=r"(t1));
+		} while (t1 - t0 < 2600000);
+		__asm__ volatile("mrs %0, pmccntr_el0" : "=r"(k1));
+		con_hex2("CPU MHZ", "hex=", (uint32_t)((k1 - k0) / 100000), "cyc=", (uint32_t)(k1 - k0));
 	}
 	con_skip();
 	stage = "smp probe";
