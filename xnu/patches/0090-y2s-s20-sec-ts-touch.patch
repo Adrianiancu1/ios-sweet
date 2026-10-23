@@ -12,10 +12,10 @@ index b258a4d..50f7b59 100644
  bsd/dev/y2s_usb.c			standard
 diff --git a/bsd/dev/y2s_sects.c b/bsd/dev/y2s_sects.c
 new file mode 100644
-index 0000000..df5b283
+index 0000000..f06228a
 --- /dev/null
 +++ b/bsd/dev/y2s_sects.c
-@@ -0,0 +1,456 @@
+@@ -0,0 +1,509 @@
 +/*
 + * Galaxy S20+ (Exynos 990) touch: Samsung sec_ts (Y79A) at I2C 0x48 on
 + * HSI2C 0x108D0000 (USI v2), polled. Register use follows Samsung's
@@ -347,6 +347,55 @@ index 0000000..df5b283
 +	}
 +}
 +
++/*
++ * I2C bus recovery on gpp5-6 (SCL) / gpp5-7 (SDA) as GPIOs, open-drain
++ * style (high = input + pull-up, low = output 0): 9 clocks, then STOP.
++ * Logs the line levels with pull-ups and after recovery. Leaves both
++ * pins as inputs without pulls.
++ */
++static void
++bus_recover(void)
++{
++	volatile uint32_t *con = (volatile uint32_t *)gpio;
++	volatile uint32_t *dat = (volatile uint32_t *)(gpio + 4);
++	volatile uint32_t *pud = (volatile uint32_t *)(gpio + 8);
++#define LVL(pin) ((*dat >> (pin)) & 1u)
++#define REL(pin) (*con = *con & ~(0xfu << (4 * (pin))))
++#define LOW(pin) do { *dat = *dat & ~(1u << (pin)); \
++	*con = (*con & ~(0xfu << (4 * (pin)))) | (1u << (4 * (pin))); } while (0)
++
++	REL(6);
++	REL(7);
++	*pud = (*pud & 0x00ffffffu) | 0x33000000u;      /* pull-up */
++	__asm__ volatile ("dsb osh" ::: "memory");
++	delay(200);
++	printf("Y2S SECTS: with pull-ups scl %u sda %u\n", LVL(6), LVL(7));
++	unsigned released = 0;
++	for (int i = 0; i < 9; i++) {
++		LOW(6);
++		delay(10);
++		REL(6);
++		delay(10);
++		if (LVL(7)) {
++			released++;
++		}
++	}
++	/* STOP: SDA low while SCL high, then release SDA. */
++	LOW(7);
++	delay(10);
++	REL(6);
++	delay(10);
++	REL(7);
++	delay(50);
++	printf("Y2S SECTS: after 9 clocks + stop scl %u sda %u (sda high on %u clocks)\n",
++	    LVL(6), LVL(7), released);
++	*pud = *pud & 0x00ffffffu;
++	__asm__ volatile ("dsb osh" ::: "memory");
++#undef LVL
++#undef REL
++#undef LOW
++}
++
 +static void
 +sects_thread(void *arg, wait_result_t wr_)
 +{
@@ -373,6 +422,7 @@ index 0000000..df5b283
 +	delay(100);
 +	printf("Y2S SECTS: lines scl %u sda %u\n",
 +	    (*(volatile uint32_t *)(gpio + 4) >> 6) & 1, (*(volatile uint32_t *)(gpio + 4) >> 7) & 1);
++	bus_recover();
 +	/*
 +	 * Touch HSI2C clocks in CMU_PERIC1 (cmucal-sfr.c): QCH USI07_I2C 0x3038,
 +	 * gate RSTNSYNC USI_I2C 0x2104, div 0x182c, user mux 0x6c0. Force the
@@ -405,7 +455,10 @@ index 0000000..df5b283
 +	static const struct { uint8_t mask; unsigned us; } tries[] = {
 +		{ 0x02, 200 }, { 0x02, 1000 }, { 0x02, 3000 }, { 0x02, 10000 }, { 0x02, 50000 },
 +	};
-+	for (unsigned t = 0; r1 != 0 && t < sizeof(tries) / sizeof(tries[0]); t++) {
++	/* Even 200 us blanks the panel: power dips only with boot-arg y2stouchcycle=1. */
++	int allow_cycle = 0;
++	(void)PE_parse_boot_argn("y2stouchcycle", &allow_cycle, sizeof(allow_cycle));
++	for (unsigned t = 0; allow_cycle && r1 != 0 && t < sizeof(tries) / sizeof(tries[0]); t++) {
 +		printf("Y2S SECTS: id rc 0x%x, try %u\n", r1, t);
 +		touch_cycle(tries[t].mask, tries[t].us);
 +		r1 = ts_read(TS_DEVICE_ID, id, 5);
