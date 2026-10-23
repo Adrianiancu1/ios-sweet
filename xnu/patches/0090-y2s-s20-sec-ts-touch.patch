@@ -12,10 +12,10 @@ index b258a4d..50f7b59 100644
  bsd/dev/y2s_usb.c			standard
 diff --git a/bsd/dev/y2s_sects.c b/bsd/dev/y2s_sects.c
 new file mode 100644
-index 0000000..d36819a
+index 0000000..89427a0
 --- /dev/null
 +++ b/bsd/dev/y2s_sects.c
-@@ -0,0 +1,417 @@
+@@ -0,0 +1,430 @@
 +/*
 + * Galaxy S20+ (Exynos 990) touch: Samsung sec_ts (Y79A) at I2C 0x48 on
 + * HSI2C 0x108D0000 (USI v2), polled. Register use follows Samsung's
@@ -264,17 +264,23 @@ index 0000000..d36819a
 +	(void)pmic_rd(S2DOS05_LDO3_CFG, &l3);
 +	printf("Y2S SECTS: s2dos05 rc 0x%x/0x%x id 0x%02x en 0x%02x ldo2 0x%02x ldo3 0x%02x\n",
 +	    r0, r1, id, en, l2, l3);
-+	if (r1 == 0 && (en & 0x06) != 0x06) {
-+		if (!(en & 0x02)) {
-+			(void)pmic_wr(S2DOS05_LDO2_CFG, (uint8_t)((l2 & 0x80) | 12));
-+		}
-+		if (!(en & 0x04)) {
-+			(void)pmic_wr(S2DOS05_LDO3_CFG, (uint8_t)((l3 & 0x80) | 12));
-+		}
++	if (r1 == 0) {
++		/*
++		 * S-Boot leaves vsel 0 (LDO2 1.5 V, LDO3 2.7 V); Linux sets the DT
++		 * voltages (1.8 V / 3.0 V) at regulator registration. Set them and
++		 * power-cycle the IC (sec_ts_power off 30 ms, on, wait for boot).
++		 */
++		(void)pmic_wr(S2DOS05_EN, (uint8_t)(en & ~0x06));
++		wait_ms(50);
++		(void)pmic_wr(S2DOS05_LDO2_CFG, (uint8_t)((l2 & 0x80) | 12));
++		(void)pmic_wr(S2DOS05_LDO3_CFG, (uint8_t)((l3 & 0x80) | 12));
 +		int rw = pmic_wr(S2DOS05_EN, (uint8_t)(en | 0x06));
 +		(void)pmic_rd(S2DOS05_EN, &en);
-+		printf("Y2S SECTS: touch supplies on, rc 0x%x en now 0x%02x\n", rw, en);
-+		wait_ms(150);                   /* IC boot after power-on */
++		(void)pmic_rd(S2DOS05_LDO2_CFG, &l2);
++		(void)pmic_rd(S2DOS05_LDO3_CFG, &l3);
++		printf("Y2S SECTS: touch supplies cycled, rc 0x%x en 0x%02x ldo2 0x%02x ldo3 0x%02x\n",
++		    rw, en, l2, l3);
++		wait_ms(300);                   /* IC boot after power-on */
 +	}
 +	i2c_addr = TS_ADDR;
 +}
@@ -348,6 +354,13 @@ index 0000000..d36819a
 +	volatile uint32_t *pud = (volatile uint32_t *)(gpio + 8);
 +	printf("Y2S SECTS: gpp5 con 0x%08x pud 0x%08x, hsi2c ctl 0x%08x conf 0x%08x usi 0x%08x\n",
 +	    *con, *pud, rd(HSI2C_CTL), rd(HSI2C_CONF), rd(USI_CON));
++	/* Line levels with SCL/SDA as plain inputs, no pulls: 1/1 = bus idle-high. */
++	*con = *con & 0x00ffffffu;
++	*pud = *pud & 0x00ffffffu;
++	__asm__ volatile ("dsb osh" ::: "memory");
++	delay(100);
++	printf("Y2S SECTS: lines scl %u sda %u\n",
++	    (*(volatile uint32_t *)(gpio + 4) >> 6) & 1, (*(volatile uint32_t *)(gpio + 4) >> 7) & 1);
 +	/*
 +	 * Touch HSI2C clocks in CMU_PERIC1 (cmucal-sfr.c): QCH USI07_I2C 0x3038,
 +	 * gate RSTNSYNC USI_I2C 0x2104, div 0x182c, user mux 0x6c0. Force the
