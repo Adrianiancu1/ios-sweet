@@ -1,5 +1,5 @@
 diff --git a/iokit/Kernel/arm/Y2SFramebuffer.cpp b/iokit/Kernel/arm/Y2SFramebuffer.cpp
-index c57f58a..a6b2fbf 100644
+index c57f58a..e28d464 100644
 --- a/iokit/Kernel/arm/Y2SFramebuffer.cpp
 +++ b/iokit/Kernel/arm/Y2SFramebuffer.cpp
 @@ -104,6 +104,9 @@ public:
@@ -52,7 +52,7 @@ index c57f58a..a6b2fbf 100644
  		/* Logical (presented) display coordinates -> panel coordinates. */
  		dx -= fOffX;
  		dy -= fOffY;
-@@ -406,6 +428,81 @@ AppleCLCD::present(const uint8_t *rec)
+@@ -406,6 +428,90 @@ AppleCLCD::present(const uint8_t *rec)
  	}
  }
  
@@ -105,6 +105,22 @@ index c57f58a..a6b2fbf 100644
 +	if (py1 > (int32_t)fHeight) {
 +		py1 = (int32_t)fHeight;
 +	}
++	/*
++	 * Build each stretched row in a cached buffer and copy it to the panel
++	 * with one memcpy; repeated rows reuse the buffer. Per-pixel stores to
++	 * (and reads back from) the uncached framebuffer made every frame
++	 * visibly paint top to bottom on one CPU.
++	 */
++	static uint32_t rowbuf[2048];
++	static int32_t lxmap[2048];
++	if (px1 - px0 > 2048) {
++		px1 = px0 + 2048;
++	}
++	for (int32_t px = px0; px < px1; px++) {
++		int32_t lx = px * 25 / 32 - dx;
++		lxmap[px - px0] = lx < 0 ? 0 : (lx >= w ? w - 1 : lx);
++	}
++	const size_t rowlen = (size_t)(px1 - px0) * 4;
 +	int32_t prev = -1;
 +	for (int32_t py = py0; py < py1; py++) {
 +		int32_t ly = (py - fPadY) * 25 / 32 - dy;
@@ -113,21 +129,14 @@ index c57f58a..a6b2fbf 100644
 +		} else if (ly >= h) {
 +			ly = h - 1;
 +		}
-+		uint32_t *dst = (uint32_t *)(fPixels + (uint64_t)py * fRowBytes);
-+		if (ly == prev && py > py0) {
-+			memcpy(dst + px0, (const void *)(fPixels + (uint64_t)(py - 1) * fRowBytes + (uint64_t)px0 * 4),
-+			    (size_t)(px1 - px0) * 4);
-+			continue;
-+		}
-+		prev = ly;
-+		const uint32_t *srow = (const uint32_t *)(src + s->offset + (uint64_t)(sy + ly) * s->bytesPerRow) + sx;
-+		for (int32_t px = px0; px < px1; px++) {
-+			int32_t lx = px * 25 / 32 - dx;
-+			if (lx >= w) {
-+				lx = w - 1;
++		if (ly != prev) {
++			prev = ly;
++			const uint32_t *srow = (const uint32_t *)(src + s->offset + (uint64_t)(sy + ly) * s->bytesPerRow) + sx;
++			for (int32_t i = 0; i < px1 - px0; i++) {
++				rowbuf[i] = srow[lxmap[i]];
 +			}
-+			dst[px] = srow[lx < 0 ? 0 : lx];
 +		}
++		memcpy((void *)(fPixels + (uint64_t)py * fRowBytes + (uint64_t)px0 * 4), rowbuf, rowlen);
 +	}
 +}
 +

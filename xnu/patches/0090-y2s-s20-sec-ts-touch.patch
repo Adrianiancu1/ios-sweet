@@ -12,10 +12,10 @@ index b258a4d..50f7b59 100644
  bsd/dev/y2s_usb.c			standard
 diff --git a/bsd/dev/y2s_sects.c b/bsd/dev/y2s_sects.c
 new file mode 100644
-index 0000000..7f33ad2
+index 0000000..776aa5c
 --- /dev/null
 +++ b/bsd/dev/y2s_sects.c
-@@ -0,0 +1,519 @@
+@@ -0,0 +1,538 @@
 +/*
 + * Galaxy S20+ (Exynos 990) touch: Samsung sec_ts (Y79A) at I2C 0x48 on
 + * HSI2C 0x108D0000 (USI v2), polled. Register use follows Samsung's
@@ -145,9 +145,10 @@ index 0000000..7f33ad2
 +	 * divider for ~100 kHz from the DT's 200 MHz IP clock (slower is safe
 +	 * if the clock is lower).
 +	 */
-+	wr(HSI2C_TIMING_FS3, (rd(HSI2C_TIMING_FS3) & ~0x00ff0000u) | (133u << 16));
-+	wr(HSI2C_TIMING_FS2, (rd(HSI2C_TIMING_FS2) & ~0xffu) | 0xfe);
-+	wr(HSI2C_TIMING_FS1, (rd(HSI2C_TIMING_FS1) & ~0x00ff0000u) | (0xffu << 16));
++	/* 400 kHz from 200 MHz: fs_div 33, TSCL_H 0xe0, TSTART_HD 0xf0. */
++	wr(HSI2C_TIMING_FS3, (rd(HSI2C_TIMING_FS3) & ~0x00ff0000u) | (33u << 16));
++	wr(HSI2C_TIMING_FS2, (rd(HSI2C_TIMING_FS2) & ~0xffu) | 0xe0);
++	wr(HSI2C_TIMING_FS1, (rd(HSI2C_TIMING_FS1) & ~0x00ff0000u) | (0xf0u << 16));
 +	wr(HSI2C_CTL, CTL_MASTER);
 +	wr(HSI2C_TRAILIG, 0xffffff);
 +	wr(HSI2C_CONF, rd(HSI2C_CONF) | CONF_AUTO_MODE);
@@ -485,7 +486,25 @@ index 0000000..7f33ad2
 +	printf("Y2S SECTS: sense on rc 0x%x, polling\n", r3);
 +	y2s_touch_logical = 1;
 +
++	/*
++	 * The IC pulls its interrupt line (gpa1-0, ALIVE pinctrl 0x15850000,
++	 * bank +0x20, DAT +0x04) low while events are pending: poll that pin
++	 * (no I2C traffic, no busy-wait) and read events only when it is low.
++	 * Every 50th idle tick an I2C read is done anyway, in case the line
++	 * does not behave as expected.
++	 */
++	vm_offset_t alive = ml_io_map(0x15850000u, 0x1000);
++	volatile uint32_t *attn = (volatile uint32_t *)(alive + 0x24);
++	printf("Y2S SECTS: attn line %u (gpa1 con 0x%08x)\n", *attn & 1,
++	    *(volatile uint32_t *)(alive + 0x20));
++	unsigned idle = 0;
++
 +	for (unsigned errors = 0;;) {
++		if ((*attn & 1) && ++idle < 50) {
++			wait_ms(8);
++			continue;
++		}
++		idle = 0;
 +		int r = ts_read(TS_ONE_EVENT, ev[0], TS_EVENT_SIZE);
 +		if (r != 0) {
 +			if (++errors < 10) {
