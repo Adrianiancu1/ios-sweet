@@ -217,6 +217,31 @@ void shim_main(uint64_t dtb)
 	con_hex2("EL", "cur=", rsr("CurrentEL") >> 2, "mpidr=", rsr("mpidr_el1"));
 	con_hex2("DTB", "at=", dtb, "magic=", dtb ? __builtin_bswap32(*(volatile uint32_t *)dtb) : 0);
 	con_hex2("TIMER", "frq=", rsr("cntfrq_el0"), 0, 0);
+	/*
+	 * Touch I2C lines (gpp5-6 SCL / gpp5-7 SDA, PERIC1 pinctrl 0x10730000)
+	 * as S-Boot left them, then as plain inputs without and with pull-ups.
+	 * Under xnu the touch IC holds both low; 1 = idle bus.
+	 */
+	if (rsr("cntfrq_el0") != 62500000) {
+		volatile uint32_t *con = (volatile uint32_t *)0x10730000UL;
+		volatile uint32_t *dat = (volatile uint32_t *)0x10730004UL;
+		volatile uint32_t *pud = (volatile uint32_t *)0x10730008UL;
+		uint32_t c0 = *con, p0 = *pud, d0 = (*dat >> 6) & 3;
+		*con = c0 & 0x00ffffffu;
+		*pud = p0 & 0x00ffffffu;
+		__asm__ volatile("dsb sy" ::: "memory");
+		wait_ms(1);
+		uint32_t d1 = (*dat >> 6) & 3;
+		*pud = (p0 & 0x00ffffffu) | 0x33000000u;
+		__asm__ volatile("dsb sy" ::: "memory");
+		wait_ms(1);
+		uint32_t d2 = (*dat >> 6) & 3;
+		*con = c0;
+		*pud = p0;
+		__asm__ volatile("dsb sy" ::: "memory");
+		con_hex2("TSP CON", "con=", c0, "pud=", p0);
+		con_hex2("TSP LINES", "asis/nopull=", d0 << 4 | d1, "pullup=", d2);
+	}
 	con_skip();
 	stage = "smp probe";
 	/* smp_probe(); SMP blocked by uH, see docs/S20.md */
