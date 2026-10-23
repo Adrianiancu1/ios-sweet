@@ -33,6 +33,75 @@ PATTERNS = [
 ]
 
 
+def cache_maps(paths):
+    """All mappings of the main cache + subcaches: (addr, size, foff, prot, path)."""
+    out = []
+    for path in paths:
+        with open(path, "rb") as f:
+            hdr = f.read(0x200)
+        if not hdr.startswith(b"dyld_v1"):
+            continue
+        moff, mcount = struct.unpack_from("<II", hdr, 0x10)
+        with open(path, "rb") as f:
+            f.seek(moff)
+            raw = f.read(32 * mcount)
+        for i in range(mcount):
+            a, size, foff, _m, initp = struct.unpack_from("<QQQII", raw, 32 * i)
+            out.append((a, size, foff, initp, path))
+    return out
+
+
+def text_ranges(paths):
+    """(path, file offset, size) of every __text-like section (S_ATTR_PURE_INSTRUCTIONS)."""
+    maps = cache_maps(paths)
+
+    def where(addr):
+        for a, size, foff, _p, path in maps:
+            if a <= addr < a + size:
+                return path, foff + addr - a
+        return None, None
+
+    main = paths[0]
+    with open(main, "rb") as f:
+        hdr = f.read(0x200)
+    ioff, icount = struct.unpack_from("<II", hdr, 0x1c0)
+    if ioff == 0:
+        ioff, icount = struct.unpack_from("<II", hdr, 0x18)
+    with open(main, "rb") as f:
+        f.seek(ioff)
+        imgs = f.read(32 * icount)
+    out, handles = [], {}
+    for i in range(icount):
+        addr = struct.unpack_from("<Q", imgs, 32 * i)[0]
+        path, off = where(addr)
+        if path is None:
+            continue
+        fh = handles.setdefault(path, open(path, "rb"))
+        fh.seek(off)
+        mh = fh.read(32)
+        magic, _ct, _st, _ft, ncmds, sizeofcmds = struct.unpack_from("<IiiIII", mh, 0)
+        if magic != 0xfeedfacf:
+            continue
+        cmds = fh.read(sizeofcmds)
+        p = 0
+        for _ in range(ncmds):
+            cmd, size = struct.unpack_from("<II", cmds, p)
+            if cmd == 0x19:  # LC_SEGMENT_64
+                nsects = struct.unpack_from("<I", cmds, p + 64)[0]
+                for k in range(nsects):
+                    sp = p + 72 + 80 * k
+                    saddr, ssize = struct.unpack_from("<QQ", cmds, sp + 32)
+                    flags = struct.unpack_from("<I", cmds, sp + 64)[0]
+                    if flags & 0x80000000 and ssize:
+                        spath, soff = where(saddr)
+                        if spath:
+                            out.append((spath, soff, ssize))
+            p += size
+    for fh in handles.values():
+        fh.close()
+    return out
+
+
 def exec_ranges(path):
     with open(path, "rb") as f:
         hdr = f.read(0x20)
@@ -60,32 +129,50 @@ def files(args):
             yield a
 
 
+def ldraa_class(w):
+    """LDRAA/LDRAB: can a plain load of the same size replace it?"""
+    imm = ((w >> 22) & 1) << 9 | (w >> 12) & 0x1ff
+    if imm & 0x200:
+        imm -= 0x400
+    off = imm * 8
+    if w & (1 << 11):  # pre-index writeback: LDR Xt, [Xn, #simm9]!
+        return "writeback ok" if -256 <= off <= 255 else "writeback FAR"
+    if off >= 0:
+        return "LDR ok"
+    return "LDUR ok" if off >= -256 else "negative FAR"
+
+
 def main():
+    args = sys.argv[1:]
+    paths = list(files(args))
+    ranges = text_ranges(paths)
     counts = {p[0]: 0 for p in PATTERNS}
+    ld = {}
     total = 0
-    for path in files(sys.argv[1:]):
-        ranges = exec_ranges(path)
-        with open(path, "rb") as f:
-            for foff, size in ranges:
-                f.seek(foff)
-                remaining = size & ~3
-                while remaining:
-                    chunk = f.read(min(remaining, 256 << 20))
-                    if not chunk:
-                        break
-                    remaining -= len(chunk)
-                    w = np.frombuffer(chunk[: len(chunk) & ~3], dtype="<u4")
-                    total += w.size
-                    for name, mask, val, _hint in PATTERNS:
-                        counts[name] += int(np.count_nonzero((w & np.uint32(mask)) == np.uint32(val)))
-        print(f"# {os.path.basename(path)}: {len(ranges)} exec mapping(s)", file=sys.stderr)
-    print(f"instructions scanned: {total}")
+    handles = {}
+    for path, foff, size in ranges:
+        fh = handles.setdefault(path, open(path, "rb"))
+        fh.seek(foff)
+        chunk = fh.read(size & ~3)
+        w = np.frombuffer(chunk[: len(chunk) & ~3], dtype="<u4")
+        total += w.size
+        for name, mask, val, _hint in PATTERNS:
+            hits = (w & np.uint32(mask)) == np.uint32(val)
+            n = int(np.count_nonzero(hits))
+            counts[name] += n
+            if n and name.startswith("LDRAA"):
+                for x in w[hits]:
+                    c = ldraa_class(int(x))
+                    ld[c] = ld.get(c, 0) + 1
+    print(f"code sections: {len(ranges)}, instructions: {total}")
     bad = 0
     for name, _m, _v, hint in PATTERNS:
         print(f"{counts[name]:>10}  {'nop ' if hint else 'TRAP'}  {name}")
         if not hint:
             bad += counts[name]
-    print(f"{bad:>10}  TRAP  total that must be rewritten or emulated")
+    print(f"{bad:>10}  TRAP  total")
+    for c, n in sorted(ld.items()):
+        print(f"{n:>10}  LDRAA {c}")
 
 
 if __name__ == "__main__":
