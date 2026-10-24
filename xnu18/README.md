@@ -11,7 +11,7 @@ SHA512 kept - check it does not wait for corecrypto), pe_serial.c
 (fbcon_probe before the serial-device early return), protos.h, task.c.
 Upstream kpc.c kept (our 8796 stub dropped).
 
-CI: .github/workflows/xnu18.yml (blacktop darwin-xnu-build, macOS 15.6,
+CI: .github/workflows/xnu.yml with variant=ios18 macos_version=15.6 (blacktop darwin-xnu-build, macOS 15.6,
 Xcode 16). The patch is applied after blacktop's patches/15.0 set.
 Known: arm_init.c now reads /chosen dram-base/dram-size (mkadt must
 provide them).
